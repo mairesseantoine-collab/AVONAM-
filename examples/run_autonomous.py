@@ -74,9 +74,12 @@ def main() -> None:
           f"{config.max_total_notional_eur} € cumulés, {config.max_trades_per_day} trades/jour\n", flush=True)
 
     while True:
-        result = runner.tick()
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{stamp}] {'ACTION' if result.acted else 'rien'} — {result.detail}", flush=True)
+        try:
+            result = runner.tick()
+            print(f"[{stamp}] {'ACTION' if result.acted else 'rien'} — {result.detail}", flush=True)
+        except Exception as exc:  # réseau, API indisponible... on ne plante jamais la boucle
+            print(f"[{stamp}] erreur transitoire, on réessaie au prochain cycle : {exc}", flush=True)
         time.sleep(interval)
 
 

@@ -204,10 +204,25 @@ class LiveTradingSession:
                 return None
 
         # Exécution réelle (dry_run=False) — le seul endroit du projet où ça arrive.
-        result = self.client.add_order(proposal.order, dry_run=False)
+        # Une erreur de l'exchange (fonds insuffisants, indisponibilité...)
+        # est journalisée et comptée comme un échec par le coupe-circuit, mais
+        # ne remonte jamais en exception : un worker automatique ne doit pas
+        # planter sur un refus d'ordre, il doit ralentir puis s'arrêter via le
+        # coupe-circuit après des échecs répétés.
+        try:
+            result = self.client.add_order(proposal.order, dry_run=False)
+        except Exception as exc:
+            self.killswitch.record_result(proposal.estimated_notional_eur, succeeded=False)
+            self.audit_log.log_event("live_order_error", {
+                "pair": proposal.order.pair,
+                "side": proposal.order.side,
+                "notional_eur": proposal.estimated_notional_eur,
+                "error": str(exc),
+            })
+            return None
+
         succeeded = result.status == "placed"
         self.killswitch.record_result(proposal.estimated_notional_eur, succeeded=succeeded)
-
         self.audit_log.log_event("live_order_executed", {
             "pair": proposal.order.pair,
             "side": proposal.order.side,

@@ -109,3 +109,22 @@ def test_sell_proposed_when_holding_and_signal_gone(tmp_path):
     proposal = session.propose()
     assert proposal.decision.action == "sell"
     assert proposal.order is not None and proposal.order.side == "sell"
+
+
+def test_exchange_error_is_handled_not_raised(tmp_path):
+    """Une erreur de l'exchange (ex. fonds insuffisants) ne doit jamais
+    remonter en exception : elle est journalisée et comptée comme un échec
+    par le coupe-circuit, sinon un worker automatique planterait en boucle."""
+    session, transport, audit = _build(tmp_path, mode=LiveMode.LIVE_REAL, signal=1, holding=False)
+    proposal = session.propose()
+
+    def _boom(order, dry_run):
+        raise RuntimeError("Erreur API Kraken : ['EOrder:Insufficient funds']")
+
+    session.client.add_order = _boom
+    result = session.confirm_and_execute(proposal, human_confirmed=True)
+
+    assert result is None  # pas de crash, refus propre
+    events = [e.event_type for e in audit.read_all()]
+    assert "live_order_error" in events
+    assert session.killswitch._consecutive_failures == 1
