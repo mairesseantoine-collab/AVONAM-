@@ -127,6 +127,22 @@ examples/     → scripts d'exemple (backtest, démo bancaire sandbox)
 pip install -r requirements.txt
 ```
 
+## Interface web
+
+`web/app.py` sert un tableau de bord dans le navigateur (formulaire de
+paramètres, courbe d'équity interactive, statistiques, derniers trades) au
+lieu de la CLI :
+
+```bash
+python -m uvicorn web.app:app --reload
+```
+
+Puis ouvrez `http://localhost:8000`. Pour le rendre accessible depuis
+n'importe quel ordinateur (pas seulement en local), voir **[DEPLOY.md](DEPLOY.md)**
+— déploiement en ~5 minutes sur Render.com, ou alternatives Fly.io/VPS.
+Cette interface web n'expose que le moteur de trading, jamais le module
+bancaire (voir l'avertissement en tête de `web/app.py`).
+
 ## Étape 1 : générer des données d'exemple
 
 Aucune connexion à un broker n'est nécessaire pour commencer. On génère un

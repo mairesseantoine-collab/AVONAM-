@@ -14,7 +14,9 @@ dependencies = [
     "PyYAML>=6.0",
     "requests>=2.31",
     "cryptography>=42.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [tool.setuptools.packages.find]
-include = ["avonam*", "bank*"]
+include = ["avonam*", "bank*", "web*"]
