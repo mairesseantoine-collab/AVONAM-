@@ -35,12 +35,12 @@ from __future__ import annotations
 import os
 import sys
 
-from avonam.strategy.sma_crossover import SMACrossoverStrategy
 from broker.killswitch import TradingKillSwitch
 from broker.kraken.client import KrakenClient
 from broker.live.agent import RuleBasedAgent
 from broker.live.config import LiveMode, LiveTradingConfig
 from broker.live.session import LiveTradingSession
+from broker.live.strategy import build_live_strategy
 from common.audit_log import AuditLog
 from common.http_transport import RequestsTransport
 
@@ -67,7 +67,7 @@ def main() -> None:
     )
     session = LiveTradingSession(
         client=client,
-        strategy=SMACrossoverStrategy(fast_period=20, slow_period=50),
+        strategy=build_live_strategy(),
         agent=RuleBasedAgent(),
         killswitch=killswitch,
         audit_log=audit,

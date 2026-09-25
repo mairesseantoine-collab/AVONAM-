@@ -79,6 +79,7 @@ def _build_live_session():
     from broker.live.agent import RuleBasedAgent
     from broker.live.config import LiveTradingConfig
     from broker.live.session import LiveTradingSession
+    from broker.live.strategy import build_live_strategy
     from common.audit_log import AuditLog
     from common.http_transport import RequestsTransport
 
@@ -97,7 +98,7 @@ def _build_live_session():
     )
     session = LiveTradingSession(
         client=client,
-        strategy=SMACrossoverStrategy(fast_period=20, slow_period=50),
+        strategy=build_live_strategy(),
         agent=RuleBasedAgent(),
         killswitch=killswitch,
         audit_log=audit,
