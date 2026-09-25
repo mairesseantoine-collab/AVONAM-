@@ -14,8 +14,12 @@ COPY broker ./broker
 COPY common ./common
 COPY web ./web
 COPY data ./data
+COPY examples ./examples
 COPY pyproject.toml .
 
 EXPOSE 8000
 
+# Commande par défaut : le web service. Le Background Worker automatique
+# surcharge cette commande par `python -m examples.run_autonomous`
+# (voir DEPLOY.md).
 CMD ["uvicorn", "web.app:app", "--host", "0.0.0.0", "--port", "8000"]
