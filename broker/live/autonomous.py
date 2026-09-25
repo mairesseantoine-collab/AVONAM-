@@ -69,5 +69,13 @@ class AutonomousRunner:
         # lancé ce runner en mode réel en connaissance de cause.
         result = self.session.confirm_and_execute(proposal, human_confirmed=True)
         if result is None:
-            return TickResult(False, "Proposition non exécutée (mode SHADOW ou garde-fou).")
+            # Remonte la vraie raison depuis le dernier événement d'audit
+            # (mode shadow, garde-fou, ou erreur d'exchange comme des fonds
+            # insuffisants), pour un log lisible plutôt qu'un message vague.
+            reason = "garde-fou"
+            entries = self.audit_log.read_all()
+            if entries:
+                payload = entries[-1].payload
+                reason = payload.get("reason") or payload.get("error") or reason
+            return TickResult(False, f"Non exécuté — {reason}")
         return TickResult(True, f"Ordre {proposal.order.side} exécuté (~{proposal.estimated_notional_eur:.2f} €).", result)
