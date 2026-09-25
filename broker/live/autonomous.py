@@ -59,6 +59,18 @@ class AutonomousRunner:
             if e.event_type == "live_order_executed" and e.timestamp.startswith(today)
         )
 
+    def summary_text(self) -> str:
+        """Résumé lisible de l'activité du jour, pour l'email quotidien."""
+        n = self._executed_today()
+        return (
+            f"Mode : {self.config.mode.value}\n"
+            f"Paire : {self.config.pair}\n"
+            f"Ordres réels exécutés aujourd'hui : {n}\n"
+            f"Plafonds : {self.config.max_notional_per_order_eur} €/ordre, "
+            f"{self.config.max_position_eur} € de position max.\n"
+            f"Coupe-circuit : {'DÉCLENCHÉ' if self.session.killswitch.is_tripped else 'ok'}."
+        )
+
     def tick(self) -> TickResult:
         """Un cycle : évalue, et exécute si tout est au vert. Ne lève jamais
         d'exception vers l'appelant sur une décision de refus : un refus est

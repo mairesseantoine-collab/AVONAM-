@@ -73,14 +73,35 @@ def main() -> None:
     print(f"Paire {config.pair} · tick {interval}s · plafonds {config.max_notional_per_order_eur} €/ordre, "
           f"{config.max_total_notional_eur} € cumulés, {config.max_trades_per_day} trades/jour\n", flush=True)
 
+    # Email au démarrage : tu sais que le robot est bien lancé.
+    _try_alert(f"Robot démarré ({banner})", runner.summary_text())
+
+    last_summary_day = None
     while True:
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         try:
             result = runner.tick()
             print(f"[{stamp}] {'ACTION' if result.acted else 'rien'} — {result.detail}", flush=True)
+
+            # Résumé quotidien : un email par jour pour savoir que tout va bien.
+            today = time.strftime("%Y-%m-%d")
+            if last_summary_day is None:
+                last_summary_day = today
+            elif today != last_summary_day:
+                _try_alert("Résumé quotidien du robot", runner.summary_text())
+                last_summary_day = today
         except Exception as exc:  # réseau, API indisponible... on ne plante jamais la boucle
             print(f"[{stamp}] erreur transitoire, on réessaie au prochain cycle : {exc}", flush=True)
         time.sleep(interval)
+
+
+def _try_alert(subject: str, body: str) -> None:
+    try:
+        from common.notify import send_email
+        ok, reason = send_email(subject, body)
+        print(f"  alerte email : {'envoyée' if ok else reason}", flush=True)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

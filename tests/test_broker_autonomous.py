@@ -57,6 +57,15 @@ def test_daily_trade_cap_stops_further_trades(tmp_path):
     assert "trades/jour" in second.detail
 
 
+def test_summary_text_reports_state(tmp_path):
+    runner, transport, audit = _runner(tmp_path, mode=LiveMode.LIVE_REAL)
+    audit.log_event("live_order_executed", {"side": "buy", "notional_eur": 10})
+    text = runner.summary_text()
+    assert "Mode : live_real" in text
+    assert "exécutés aujourd'hui : 1" in text
+    assert "Coupe-circuit : ok" in text
+
+
 def test_halts_when_killswitch_tripped(tmp_path):
     runner, transport, _ = _runner(tmp_path, mode=LiveMode.LIVE_REAL)
     runner.session.killswitch._tripped = True
