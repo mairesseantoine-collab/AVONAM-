@@ -94,6 +94,15 @@ class KrakenClient:
     def query_orders(self, txids: list[str]) -> dict:
         return self._private("QueryOrders", {"txid": ",".join(txids)})
 
+    def get_open_orders(self) -> list[dict]:
+        """Ordres en attente (non encore exécutés), pour affichage.
+        Retourne une liste simplifiée {id, description, status}."""
+        result = self._private("OpenOrders", {})
+        return [
+            {"id": txid, "description": (o.get("descr") or {}).get("order", ""), "status": o.get("status", "")}
+            for txid, o in result.get("open", {}).items()
+        ]
+
     # -- interne ---------------------------------------------------------------
 
     def _private(self, endpoint: str, data: dict) -> dict:

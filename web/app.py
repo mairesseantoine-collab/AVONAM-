@@ -217,6 +217,31 @@ def api_live_propose(_auth: bool = Depends(require_live_auth)) -> dict:
         return {"error": str(exc)}
 
 
+@app.get("/api/live/account")
+def api_live_account(_auth: bool = Depends(require_live_auth)) -> dict:
+    """État réel du compte Kraken, source de vérité quel que soit ce qui a
+    passé les ordres (worker ou page). Lecture seule."""
+    from broker.live.session import _BASE_ASSET
+
+    try:
+        session, config = _build_live_session()
+        client = session.client
+        balances = {b.asset: b.amount for b in client.get_balance()}
+        base_asset = _BASE_ASSET.get(config.pair)
+        base_amount = balances.get(base_asset, 0.0) if base_asset else 0.0
+        last_price = float(client.get_ticker(config.pair)["c"][0])
+        return {
+            "eur": round(balances.get("ZEUR", 0.0), 2),
+            "base_asset": base_asset,
+            "base_amount": base_amount,
+            "base_value_eur": round(base_amount * last_price, 2),
+            "last_price": round(last_price, 2),
+            "open_orders": client.get_open_orders(),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @app.post("/api/live/execute")
 def api_live_execute(body: dict, _auth: bool = Depends(require_live_auth)) -> dict:
     # Le clic authentifié + le mot de confirmation constituent la
@@ -679,6 +704,11 @@ _LIVE_PAGE = """<!DOCTYPE html>
   <div id="mode-banner" class="mode-banner mode-shadow">Chargement…</div>
 
   <div class="panel">
+    <div style="font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:600;">Ton compte Kraken (en direct)</div>
+    <div id="account">Chargement…</div>
+  </div>
+
+  <div class="panel">
     <div id="proposal">Chargement de la proposition…</div>
     <div class="caps" id="caps"></div>
   </div>
@@ -697,6 +727,7 @@ _LIVE_PAGE = """<!DOCTYPE html>
 <script>
 const CONFIRM_WORD = "EXECUTER";
 const bannerEl = document.getElementById('mode-banner');
+const accountEl = document.getElementById('account');
 const proposalEl = document.getElementById('proposal');
 const capsEl = document.getElementById('caps');
 const rationaleEl = document.getElementById('rationale');
@@ -706,6 +737,23 @@ const refreshBtn = document.getElementById('refresh');
 let currentMode = 'shadow';
 
 function fmt(n) { return typeof n === 'number' ? n.toLocaleString('fr-BE', {maximumFractionDigits: 2}) : n; }
+
+async function loadAccount() {
+  const resp = await fetch('/api/live/account');
+  const d = await resp.json();
+  if (d.error) {
+    accountEl.innerHTML = '<span style="color:var(--muted)">Solde indisponible (clés Kraken non configurées, ou erreur : ' + d.error + ')</span>';
+    return;
+  }
+  const orders = (d.open_orders && d.open_orders.length)
+    ? d.open_orders.map(o => `<div class="row"><span class="k">Ordre en attente</span><span class="v">${o.description}</span></div>`).join('')
+    : '<div class="row"><span class="k">Ordres en attente</span><span class="v">aucun</span></div>';
+  accountEl.innerHTML = `
+    <div class="row"><span class="k">Euros disponibles</span><span class="v">${fmt(d.eur)} €</span></div>
+    <div class="row"><span class="k">Crypto détenue</span><span class="v">${d.base_amount} (${fmt(d.base_value_eur)} €)</span></div>
+    ${orders}
+  `;
+}
 
 async function loadProposal() {
   resultEl.className = 'result';
@@ -767,11 +815,12 @@ async function execute() {
     resultEl.className = 'result ko';
     resultEl.textContent = 'Non exécuté : ' + (d.reason || 'raison inconnue');
   }
-  setTimeout(loadProposal, 1500);
+  setTimeout(refreshAll, 1500);
 }
 
-refreshBtn.addEventListener('click', loadProposal);
-loadProposal();
+function refreshAll() { loadAccount(); loadProposal(); }
+refreshBtn.addEventListener('click', refreshAll);
+refreshAll();
 </script>
 </body>
 </html>"""

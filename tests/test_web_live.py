@@ -63,6 +63,15 @@ def test_propose_returns_payload(client):
     assert data["has_order"] is True
 
 
+def test_account_returns_balance(client):
+    resp = client.get("/api/live/account", auth=("user", PASSWORD))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "eur" in data
+    assert "base_value_eur" in data
+    assert "open_orders" in data
+
+
 def test_execute_in_shadow_never_executes(client):
     resp = client.post("/api/live/execute", json={"confirm": "EXECUTER"}, auth=("user", PASSWORD))
     assert resp.status_code == 200

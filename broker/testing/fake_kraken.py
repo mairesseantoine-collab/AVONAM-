@@ -114,4 +114,12 @@ class FakeKrakenTransport:
                     result[txid] = {"status": order.status}
             return HttpResponse(200, {"error": [], "result": result}, {})
 
+        if parsed.path.endswith("/private/OpenOrders"):
+            open_map = {
+                txid: {"descr": {"order": f"ordre {txid}"}, "status": o.status}
+                for txid, o in self.orders.items()
+                if o.status == "open"
+            }
+            return HttpResponse(200, {"error": [], "result": {"open": open_map}}, {})
+
         return HttpResponse(404, {"error": [f"route inconnue (fake Kraken) : {url}"]}, {})
