@@ -200,6 +200,21 @@ plus d'une paire, le worker passe en mode multi-crypto automatiquement.
 | `AVONAM_PAIRS` | Paires à scanner (active le multi-crypto) | `XBTEUR,ETHEUR,SOLEUR,ADAEUR,DOTEUR` |
 | `AVONAM_SENTIMENT_MODE` | `off`, `filter` (défaut), ou `tilt` | `filter` |
 | `AVONAM_SENTIMENT_SUBREDDITS` | Forums Reddit lus | `CryptoCurrency,CryptoMarkets` |
+| `AVONAM_USE_REDDIT` / `_COINGECKO` / `_FEARGREED` / `_NEWS` | Activer/couper chaque source (défaut : toutes) | `true` |
+| `AVONAM_NEWS_FEEDS` | Flux RSS d'actualité (optionnel) | `https://cointelegraph.com/rss` |
+
+**Sources de données croisées.** Le robot combine plusieurs signaux, tous
+gratuits et sans clé :
+- **Reddit** (par crypto) : ambiance des discussions.
+- **CoinGecko** (par crypto) : variation de prix 24 h, un sentiment « de
+  marché » qui complète celui « de discussion ».
+- **Fear & Greed Index** (marché entier) : lecture contrarienne. En avidité
+  extrême, il suspend les ouvertures le temps d'un cycle.
+- **Actualité RSS** (marché entier) : en cas d'événement grave répété dans
+  les titres (piratage, interdiction), il suspend aussi les ouvertures.
+
+Sentiment par crypto et contexte de marché gardent le même principe : jamais
+un déclencheur d'ordre, seulement un filtre prudent et un départage.
 
 Comment ça se comporte, à chaque cycle :
 1. **Ventes d'abord.** Toute position dont le signal technique est retombé
@@ -224,6 +239,39 @@ Comment ça se comporte, à chaque cycle :
 Le plafond `AVONAM_MAX_POSITION_EUR` s'applique **par crypto** : avec 5
 paires et un plafond de 50 €, l'exposition totale possible est de 5 × 50 €.
 Ajustez `AVONAM_MAX_TOTAL_EUR` et `AVONAM_MAX_POSITION_EUR` en conséquence.
+
+## Vente à découvert (shorts) sur marge — le mode le plus risqué
+
+Le robot peut ouvrir des positions à la baisse (shorts) sur la marge Kraken,
+avec effet de levier. **C'est de loin l'option la plus dangereuse du projet :
+avec du levier, une position peut être LIQUIDÉE et faire perdre plus que la
+mise, et des frais de financement s'appliquent.** Elle est donc **désactivée
+par défaut**, même en `live_real`, et exige un interrupteur explicite dédié.
+
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `AVONAM_ALLOW_SHORT` | `true` pour autoriser les shorts réels | `false` |
+| `AVONAM_LEVERAGE` | Levier utilisé pour ouvrir un short | `2` |
+| `AVONAM_MAX_LEVERAGE` | Plafond dur du levier | `3` |
+
+Comment ça marche : quand la stratégie donne un signal baissier (-1) et
+qu'aucune position n'est ouverte, le robot ouvre un short (vente à levier),
+borné par les mêmes plafonds que les longs (par ordre, exposition, cumulé,
+trades/jour, coupe-circuit). Quand le signal baissier disparaît, il rachète
+pour couvrir (fermeture, jamais bloquée). Le plafond d'exposition
+(`AVONAM_MAX_POSITION_EUR`) borne désormais l'exposition totale par crypto,
+longs ET shorts confondus.
+
+> ⚠️ **Recommandation, sans détour.** Valide d'abord en `AVONAM_MODE=shadow`
+> plusieurs jours avec `AVONAM_ALLOW_SHORT=true` : tu verras les shorts
+> proposés dans le journal, sans qu'aucun ne parte. Ne passe en réel que si
+> tu comprends la liquidation et que tu acceptes de perdre la mise engagée.
+> Garde le levier au minimum (2) et les plafonds bas.
+
+Prérequis côté Kraken : la marge doit être disponible sur ton compte (elle
+dépend de ton niveau de vérification et de ta juridiction). Si la marge n'est
+pas autorisée, Kraken refuse l'ordre ; l'erreur est journalisée et comptée
+par le coupe-circuit, le robot ne plante pas.
 
 ## Alertes email (optionnel)
 

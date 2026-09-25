@@ -12,6 +12,8 @@ class Order:
     volume: float       # quantité en unité de base (ex. BTC)
     order_type: str = "market"   # "market" ou "limit"
     price: float | None = None   # obligatoire si order_type == "limit"
+    leverage: int | None = None  # None = spot (aucun levier) ; >1 = marge (short / long à levier)
+    reduce_only: bool = False    # True = ne fait que réduire/fermer une position de marge existante
 
     def __post_init__(self) -> None:
         if self.side not in ("buy", "sell"):
@@ -22,6 +24,12 @@ class Order:
             raise ValueError("price est obligatoire pour un ordre 'limit'.")
         if self.volume <= 0:
             raise ValueError(f"volume doit être positif (reçu: {self.volume})")
+        if self.leverage is not None and self.leverage < 2:
+            raise ValueError(f"leverage doit valoir au moins 2 sur marge (reçu: {self.leverage}). None = spot.")
+
+    @property
+    def is_margin(self) -> bool:
+        return self.leverage is not None
 
 
 @dataclass

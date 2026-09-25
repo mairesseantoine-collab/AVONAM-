@@ -105,6 +105,24 @@ def test_no_buy_signal_no_action(tmp_path):
     assert transport.orders == {}
 
 
+def test_market_risk_off_suspends_openings(tmp_path):
+    from market.signal import MarketSignal
+
+    class _RiskOff:
+        def evaluate(self):
+            return MarketSignal(bias=-0.5, risk_off=True, reasons=["piratage majeur"])
+
+    pairs = ["XBTEUR"]
+    sessions, transport, audit = _sessions(tmp_path, pairs, _Long())
+    runner = PortfolioRunner(sessions, sentiment_mode="off", market_provider=_RiskOff())
+
+    result = runner.tick()
+    assert result.acted is False
+    assert "risk-off" in result.detail.lower()
+    assert transport.orders == {}
+    assert any(e.event_type == "market_risk_off" for e in audit.read_all())
+
+
 def test_killswitch_halts_portfolio(tmp_path):
     pairs = ["XBTEUR"]
     sessions, transport, audit = _sessions(tmp_path, pairs, _Long())

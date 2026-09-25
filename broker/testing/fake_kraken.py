@@ -33,6 +33,7 @@ class FakeKrakenTransport:
     def __init__(self) -> None:
         self.balances: dict[str, float] = {"ZEUR": 1_000.0, "XXBT": 0.05}
         self.orders: dict[str, _FakeOrder] = {}
+        self.positions: dict[str, dict] = {}  # positions de marge (short/long à levier)
         self._ohlc_cache: dict[str, list[list]] = {}
 
     # -- helper réservé aux tests / à la démo --------------------------------
@@ -40,6 +41,9 @@ class FakeKrakenTransport:
     def simulate_order_status(self, txid: str, status: str) -> None:
         if txid in self.orders:
             self.orders[txid].status = status
+
+    def _last_close(self, pair: str) -> float:
+        return float(self._synthetic_ohlc(pair)[-1][4])
 
     def _synthetic_ohlc(self, pair: str, n: int = 200) -> list[list]:
         if pair not in self._ohlc_cache:
@@ -94,7 +98,9 @@ class FakeKrakenTransport:
             side = data.get("type", "buy")
             volume = data.get("volume", "0")
             order_type = data.get("ordertype", "market")
-            descr = f"{side} {volume} {pair} @ {order_type}"
+            leverage = data.get("leverage")
+            reduce_only = data.get("reduce_only") == "true"
+            descr = f"{side} {volume} {pair} @ {order_type}" + (f" x{leverage}" if leverage else "")
 
             if data.get("validate") == "true":
                 # Mode vérification uniquement (dry-run côté Kraken) :
@@ -103,7 +109,23 @@ class FakeKrakenTransport:
 
             txid = f"O{uuid.uuid4().hex[:10].upper()}"
             self.orders[txid] = _FakeOrder(txid=txid, status="open")
+
+            # Suivi grossier des positions de marge, suffisant pour les tests :
+            # un sell/buy à levier (hors reduce_only) ouvre une position ;
+            # un reduce_only ferme les positions ouvertes sur la paire.
+            if leverage and not reduce_only:
+                self.positions[txid] = {
+                    "pair": pair, "type": side, "vol": float(volume),
+                    "cost": float(volume) * self._last_close(pair),
+                }
+            elif reduce_only:
+                for pid in [p for p, v in self.positions.items() if v["pair"] == pair]:
+                    del self.positions[pid]
+
             return HttpResponse(200, {"error": [], "result": {"descr": {"order": descr}, "txid": [txid]}}, {})
+
+        if parsed.path.endswith("/private/OpenPositions"):
+            return HttpResponse(200, {"error": [], "result": dict(self.positions)}, {})
 
         if parsed.path.endswith("/private/QueryOrders"):
             txids = data.get("txid", "").split(",")

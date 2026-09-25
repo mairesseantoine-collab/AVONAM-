@@ -93,6 +93,13 @@ class KrakenClient:
         }
         if order.order_type == "limit":
             data["price"] = f"{order.price}"
+        if order.leverage is not None:
+            # Kraken ouvre/gère une position sur marge dès que `leverage` est
+            # présent. C'est ce qui permet la vente à découvert (short) : un
+            # `type=sell` avec levier ouvre une position vendeuse.
+            data["leverage"] = f"{order.leverage}"
+        if order.reduce_only:
+            data["reduce_only"] = "true"
         if dry_run:
             data["validate"] = "true"
 
@@ -107,6 +114,26 @@ class KrakenClient:
 
     def query_orders(self, txids: list[str]) -> dict:
         return self._private("QueryOrders", {"txid": ",".join(txids)})
+
+    def get_open_positions(self) -> list[dict]:
+        """Positions de marge ouvertes (endpoint privé OpenPositions).
+
+        Une position short (vente à découvert) n'apparaît PAS dans le solde
+        spot (`get_balance`) : elle vit ici. Chaque entrée simplifiée :
+        {pair, type ('buy'/'sell'), volume, cost}. `type=sell` = position
+        vendeuse (short). Nécessaire pour savoir si un short est déjà ouvert
+        avant d'en proposer un autre, et pour le fermer."""
+        result = self._private("OpenPositions", {})
+        positions = []
+        for posid, p in (result or {}).items():
+            positions.append({
+                "id": posid,
+                "pair": p.get("pair", ""),
+                "type": p.get("type", ""),
+                "volume": float(p.get("vol", 0.0)),
+                "cost": float(p.get("cost", 0.0)),
+            })
+        return positions
 
     def get_open_orders(self) -> list[dict]:
         """Ordres en attente (non encore exécutés), pour affichage.

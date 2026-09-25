@@ -30,6 +30,15 @@ class LiveTradingConfig:
     max_consecutive_failures: int = 3
     max_trades_per_day: int = 3            # garde-fou spécifique au mode automatique
 
+    # -- vente à découvert (short) sur marge, le mode le plus risqué ----------
+    # OFF par défaut : même en LIVE_REAL, aucun short réel n'est passé tant
+    # que allow_short n'est pas explicitement activé. Le levier ouvre un
+    # risque de LIQUIDATION (perte pouvant dépasser la mise) et des frais de
+    # financement. Le plafond de levier est volontairement bas.
+    allow_short: bool = False
+    leverage: int = 2                      # levier utilisé pour ouvrir un short
+    max_leverage: int = 3                  # plafond dur : leverage ne peut le dépasser
+
     def __post_init__(self) -> None:
         for name in ("max_notional_per_order_eur", "max_notional_per_day_eur", "max_total_notional_eur", "max_position_eur"):
             if getattr(self, name) <= 0:
@@ -38,6 +47,11 @@ class LiveTradingConfig:
             raise ValueError("Le plafond par ordre ne peut pas dépasser le plafond total.")
         if self.max_trades_per_day <= 0:
             raise ValueError("max_trades_per_day doit être strictement positif.")
+        if self.allow_short:
+            if self.leverage < 2:
+                raise ValueError("leverage doit valoir au moins 2 pour un short sur marge.")
+            if self.leverage > self.max_leverage:
+                raise ValueError(f"leverage ({self.leverage}) dépasse le plafond max_leverage ({self.max_leverage}).")
 
     @staticmethod
     def from_env() -> "LiveTradingConfig":
@@ -50,6 +64,9 @@ class LiveTradingConfig:
         def _f(name: str, default: float) -> float:
             return float(os.environ.get(name, default))
 
+        def _b(name: str) -> bool:
+            return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
         return LiveTradingConfig(
             mode=mode,
             pair=os.environ.get("AVONAM_PAIR", "XBTEUR"),
@@ -58,4 +75,7 @@ class LiveTradingConfig:
             max_total_notional_eur=_f("AVONAM_MAX_TOTAL_EUR", 50.0),
             max_position_eur=_f("AVONAM_MAX_POSITION_EUR", 50.0),
             max_trades_per_day=int(os.environ.get("AVONAM_MAX_TRADES_PER_DAY", 3)),
+            allow_short=_b("AVONAM_ALLOW_SHORT"),
+            leverage=int(os.environ.get("AVONAM_LEVERAGE", 2)),
+            max_leverage=int(os.environ.get("AVONAM_MAX_LEVERAGE", 3)),
         )

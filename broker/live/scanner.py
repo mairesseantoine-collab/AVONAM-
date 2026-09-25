@@ -31,12 +31,14 @@ from datetime import datetime, timezone
 from broker.live.assets import sentiment_symbol_for
 from broker.live.autonomous import TickResult, _alert
 from broker.live.session import LiveTradingSession
+from market.signal import NullMarketProvider
 from sentiment.provider import NullSentimentProvider, SentimentProvider
 
 
 @dataclass
 class Candidate:
     pair: str
+    intent: str          # open_long | open_short
     momentum: float
     sentiment: float
     sentiment_reliable: bool
@@ -54,6 +56,7 @@ class PortfolioRunner:
         sentiment_mode: str = "filter",
         sentiment_veto_threshold: float = -0.35,
         sentiment_tilt_weight: float = 0.05,
+        market_provider=None,
     ) -> None:
         if not sessions:
             raise ValueError("Au moins une paire est requise pour le multi-crypto.")
@@ -66,6 +69,7 @@ class PortfolioRunner:
         self.sentiment_mode = sentiment_mode
         self.veto_threshold = sentiment_veto_threshold
         self.tilt_weight = sentiment_tilt_weight
+        self.market = market_provider or NullMarketProvider()
 
     # -- comptage --------------------------------------------------------------
 
@@ -80,13 +84,15 @@ class PortfolioRunner:
     def summary_text(self) -> str:
         n = self._executed_today()
         pairs = ", ".join(self.sessions)
+        shorts = f"activés (levier {self.config.leverage})" if self.config.allow_short else "désactivés"
         return (
             f"Mode : {self.config.mode.value}\n"
             f"Paires scannées : {pairs}\n"
             f"Sentiment : {self.sentiment_mode}\n"
+            f"Shorts : {shorts}\n"
             f"Ordres réels exécutés aujourd'hui : {n}\n"
             f"Plafonds : {self.config.max_notional_per_order_eur} €/ordre, "
-            f"{self.config.max_position_eur} € de position max par crypto.\n"
+            f"{self.config.max_position_eur} € d'exposition max par crypto.\n"
             f"Coupe-circuit : {'DÉCLENCHÉ' if self.killswitch.is_tripped else 'ok'}."
         )
 
@@ -108,29 +114,39 @@ class PortfolioRunner:
         # Une proposition par paire (chaque propose() ne fait que lire + journaliser).
         proposals = {pair: session.propose() for pair, session in self.sessions.items()}
 
-        # 1. Ventes prioritaires (réduction du risque).
+        # 1. Fermetures prioritaires (réduction du risque) : sortie de long OU
+        #    rachat de couverture d'un short. Distinguées par l'intention, car
+        #    une ouverture de short est aussi un ordre « sell ».
         for pair, proposal in proposals.items():
-            if proposal.order is not None and proposal.order.side == "sell":
+            if proposal.order is not None and proposal.decision.intent in ("close_long", "close_short"):
                 result = self.sessions[pair].confirm_and_execute(proposal, human_confirmed=True)
                 if result is not None:
                     _alert(
-                        f"Ordre réel sell exécuté ({pair})",
-                        f"Sortie de position sur {pair} (~{proposal.estimated_notional_eur:.2f} €, "
+                        f"Fermeture exécutée ({pair})",
+                        f"Fermeture de position sur {pair} (~{proposal.estimated_notional_eur:.2f} €, "
                         f"id {result.order_id}).",
                     )
-                    return TickResult(True, f"Vente {pair} exécutée (~{proposal.estimated_notional_eur:.2f} €).", result)
+                    return TickResult(True, f"Fermeture {pair} exécutée (~{proposal.estimated_notional_eur:.2f} €).", result)
 
-        # 2. Achats : candidats techniques valides seulement.
-        buy_pairs = [
+        # 2. Ouvertures : candidats techniques valides (long ou short).
+        open_pairs = [
             pair for pair, p in proposals.items()
-            if p.order is not None and p.order.side == "buy"
+            if p.order is not None and p.decision.intent in ("open_long", "open_short")
         ]
-        if not buy_pairs:
-            return TickResult(False, "Aucun candidat : aucune paire ne donne de signal d'achat exécutable.")
+        if not open_pairs:
+            return TickResult(False, "Aucun candidat : aucune paire ne donne de signal d'ouverture exécutable.")
 
-        candidates = self._rank_buys(buy_pairs, proposals)
+        # Contexte de marché (une seule évaluation par cycle). Un risk_off
+        # (événement grave, euphorie extrême) suspend toute OUVERTURE ce cycle ;
+        # les fermetures ci-dessus ont déjà pu passer.
+        market = self.market.evaluate()
+        if market.risk_off:
+            self.audit_log.log_event("market_risk_off", {"bias": round(market.bias, 3), "reasons": market.reasons})
+            return TickResult(False, f"Marché en risk-off, ouvertures suspendues : {'; '.join(market.reasons) or 'contexte défavorable'}.")
+
+        candidates = self._rank_opens(open_pairs, proposals)
         if not candidates:
-            return TickResult(False, "Tous les candidats d'achat écartés par le filtre de sentiment.")
+            return TickResult(False, "Tous les candidats écartés par le filtre de sentiment.")
 
         best = candidates[0]
         proposal = proposals[best.pair]
@@ -143,50 +159,65 @@ class PortfolioRunner:
                 reason = payload.get("reason") or payload.get("error") or reason
             return TickResult(False, f"Non exécuté ({best.pair}) — {reason}")
 
+        sens = "achat (long)" if best.intent == "open_long" else "vente à découvert (short)"
         _alert(
-            f"Ordre réel buy exécuté ({best.pair})",
-            f"Achat de ~{proposal.estimated_notional_eur:.2f} € sur {best.pair} "
+            f"Ouverture {best.intent} exécutée ({best.pair})",
+            f"{sens} de ~{proposal.estimated_notional_eur:.2f} € sur {best.pair} "
             f"(momentum {best.momentum:+.2%}, sentiment {best.sentiment:+.2f}, id {result.order_id}).",
         )
         detail = (
-            f"Achat {best.pair} exécuté (~{proposal.estimated_notional_eur:.2f} €, "
+            f"Ouverture {best.intent} {best.pair} exécutée (~{proposal.estimated_notional_eur:.2f} €, "
             f"momentum {best.momentum:+.2%}, sentiment {best.sentiment:+.2f})."
         )
         return TickResult(True, detail, result)
 
     # -- classement + filtre de sentiment --------------------------------------
 
-    def _rank_buys(self, buy_pairs: list[str], proposals) -> list[Candidate]:
-        symbols = {pair: sentiment_symbol_for(pair) for pair in buy_pairs}
+    def _rank_opens(self, open_pairs: list[str], proposals) -> list[Candidate]:
+        symbols = {pair: sentiment_symbol_for(pair) for pair in open_pairs}
         wanted = sorted({s for s in symbols.values() if s})
         scores = self.sentiment.scores_for(wanted) if (wanted and self.sentiment_mode != "off") else {}
 
         candidates: list[Candidate] = []
-        for pair in buy_pairs:
+        for pair in open_pairs:
+            intent = proposals[pair].decision.intent
             momentum = proposals[pair].momentum
             symbol = symbols[pair]
             sent = scores.get(symbol)
             s_value = sent.score if sent else 0.0
             s_reliable = bool(sent and sent.is_reliable)
 
-            # Filtre prudent : on écarte un achat au sentiment franchement
-            # négatif ET fiable, quel que soit le signal technique.
-            if self.sentiment_mode != "off" and s_reliable and s_value < self.veto_threshold:
-                self.audit_log.log_event("sentiment_veto", {
-                    "pair": pair, "sentiment": round(s_value, 3),
-                    "mentions": sent.mentions if sent else 0,
-                    "reason": f"sentiment {s_value:.2f} < seuil {self.veto_threshold:.2f}",
-                })
-                continue
+            # Filtre prudent, orienté selon le sens : on écarte un LONG au
+            # sentiment franchement négatif, et un SHORT au sentiment
+            # franchement positif (dans les deux cas, la foule pousse contre
+            # nous). Ne s'applique que si le sentiment est fiable.
+            if self.sentiment_mode != "off" and s_reliable:
+                if intent == "open_long" and s_value < self.veto_threshold:
+                    self._log_veto(pair, "long", s_value, sent)
+                    continue
+                if intent == "open_short" and s_value > -self.veto_threshold:
+                    self._log_veto(pair, "short", s_value, sent)
+                    continue
 
-            rank_score = momentum
+            # Score de classement orienté : un long veut un momentum élevé, un
+            # short un momentum très négatif. On ramène tout à « plus c'est
+            # grand, meilleur c'est ».
+            base = momentum if intent == "open_long" else -momentum
+            rank_score = base
             if self.sentiment_mode == "tilt" and s_reliable:
-                rank_score = momentum + self.tilt_weight * s_value
+                tilt = s_value if intent == "open_long" else -s_value
+                rank_score = base + self.tilt_weight * tilt
 
             candidates.append(Candidate(
-                pair=pair, momentum=momentum, sentiment=s_value,
+                pair=pair, intent=intent, momentum=momentum, sentiment=s_value,
                 sentiment_reliable=s_reliable, rank_score=rank_score,
             ))
 
         candidates.sort(key=lambda c: c.rank_score, reverse=True)
         return candidates
+
+    def _log_veto(self, pair: str, sens: str, s_value: float, sent) -> None:
+        self.audit_log.log_event("sentiment_veto", {
+            "pair": pair, "sens": sens, "sentiment": round(s_value, 3),
+            "mentions": sent.mentions if sent else 0,
+        })

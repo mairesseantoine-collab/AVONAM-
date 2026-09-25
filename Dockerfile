@@ -13,6 +13,7 @@ COPY avonam ./avonam
 COPY broker ./broker
 COPY common ./common
 COPY sentiment ./sentiment
+COPY market ./market
 COPY web ./web
 COPY data ./data
 COPY examples ./examples

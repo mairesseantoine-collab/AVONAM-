@@ -26,6 +26,7 @@ class HttpResponse:
     status_code: int
     json_body: dict
     headers: dict
+    text: str = ""  # corps brut, utile pour les réponses non-JSON (ex. flux RSS/XML)
 
 
 class HttpTransport(Protocol):
@@ -47,7 +48,7 @@ class RequestsTransport:
             body = resp.json()
         except ValueError:
             body = {}
-        return HttpResponse(status_code=resp.status_code, json_body=body, headers=dict(resp.headers))
+        return HttpResponse(status_code=resp.status_code, json_body=body, headers=dict(resp.headers), text=resp.text)
 
     def get(self, url: str, headers: dict | None = None) -> HttpResponse:
         import requests

@@ -20,9 +20,16 @@ Variables d'environnement lues :
                                 MULTI-CRYPTO : scanne toutes les paires et
                                 n'agit que sur le meilleur candidat par cycle.
     AVONAM_SENTIMENT_MODE       off | filter (défaut) | tilt — rôle du
-                                sentiment Reddit (jamais un déclencheur, voir
-                                sentiment/__init__.py).
+                                sentiment par symbole (jamais un déclencheur,
+                                voir sentiment/__init__.py).
     AVONAM_SENTIMENT_SUBREDDITS subreddits, ex. "CryptoCurrency,CryptoMarkets"
+    AVONAM_USE_REDDIT / _COINGECKO / _FEARGREED / _NEWS   activer/désactiver
+                                chaque source (défaut : toutes activées).
+    AVONAM_ALLOW_SHORT          true pour autoriser la vente à découvert RÉELLE
+                                sur marge (levier). OFF par défaut. Le mode le
+                                plus risqué : risque de liquidation.
+    AVONAM_LEVERAGE             levier des shorts (défaut 2, plafonné par
+                                AVONAM_MAX_LEVERAGE, défaut 3).
     AVONAM_TICK_SECONDS         intervalle entre deux cycles (défaut 3600)
     KRAKEN_API_KEY / _SECRET    clé restreinte (jamais « Withdraw »)
     AVONAM_MAX_ORDER_EUR, AVONAM_MAX_DAY_EUR, AVONAM_MAX_TOTAL_EUR,
@@ -57,15 +64,60 @@ def _pairs_from_env(config: LiveTradingConfig) -> list[str]:
     return pairs or [config.pair]
 
 
+def _flag(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _build_sentiment_provider():
+    """Sentiment PAR SYMBOLE : combinaison de Reddit (discussion) et CoinGecko
+    (marché). Mode 'off' → aucun (comportement technique pur)."""
     mode = os.environ.get("AVONAM_SENTIMENT_MODE", "filter").strip().lower()
     if mode == "off":
         from sentiment.provider import NullSentimentProvider
         return NullSentimentProvider(), "off"
-    from sentiment.reddit import RedditSentimentProvider
-    subs = os.environ.get("AVONAM_SENTIMENT_SUBREDDITS", "").strip()
-    subreddits = [s.strip() for s in subs.split(",") if s.strip()] or None
-    return RedditSentimentProvider(subreddits=subreddits), mode
+
+    providers = []
+    if _flag("AVONAM_USE_REDDIT", True):
+        from sentiment.reddit import RedditSentimentProvider
+        subs = os.environ.get("AVONAM_SENTIMENT_SUBREDDITS", "").strip()
+        subreddits = [s.strip() for s in subs.split(",") if s.strip()] or None
+        providers.append(RedditSentimentProvider(subreddits=subreddits))
+    if _flag("AVONAM_USE_COINGECKO", True):
+        from market.coingecko import CoinGeckoSentimentProvider
+        providers.append(CoinGeckoSentimentProvider())
+
+    if not providers:
+        from sentiment.provider import NullSentimentProvider
+        return NullSentimentProvider(), "off"
+    if len(providers) == 1:
+        return providers[0], mode
+    from market.composite import CompositeSentimentProvider
+    return CompositeSentimentProvider(providers), mode
+
+
+def _build_market_provider():
+    """Contexte DE MARCHÉ : Fear & Greed + veille d'actualité. Sert de
+    garde-fou prudent (risk_off), jamais de déclencheur."""
+    providers = []
+    if _flag("AVONAM_USE_FEARGREED", True):
+        from market.fear_greed import FearGreedProvider
+        providers.append(FearGreedProvider())
+    if _flag("AVONAM_USE_NEWS", True):
+        from market.news import NewsProvider
+        feeds = os.environ.get("AVONAM_NEWS_FEEDS", "").strip()
+        feed_list = [f.strip() for f in feeds.split(",") if f.strip()] or None
+        providers.append(NewsProvider(feeds=feed_list))
+
+    if not providers:
+        from market.signal import NullMarketProvider
+        return NullMarketProvider()
+    if len(providers) == 1:
+        return providers[0]
+    from market.composite import CompositeMarketProvider
+    return CompositeMarketProvider(providers)
 
 
 def build_runner():
@@ -104,7 +156,8 @@ def build_runner():
         for pair in pairs
     }
     provider, mode = _build_sentiment_provider()
-    return PortfolioRunner(sessions, sentiment_provider=provider, sentiment_mode=mode)
+    market = _build_market_provider()
+    return PortfolioRunner(sessions, sentiment_provider=provider, sentiment_mode=mode, market_provider=market)
 
 
 def main() -> None:

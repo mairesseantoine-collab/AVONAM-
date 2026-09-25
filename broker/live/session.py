@@ -92,14 +92,36 @@ class LiveTradingSession:
             return 0.0
         return 0.0
 
+    def _open_short_volume(self) -> float:
+        """Volume d'un short (position de marge vendeuse) déjà ouvert sur la
+        paire, lu en direct sur Kraken (OpenPositions). 0 si aucun, ou si la
+        lecture échoue (on reste prudent : pas de nouveau short proposé)."""
+        try:
+            total = 0.0
+            for pos in self.client.get_open_positions():
+                if pos.get("pair") == self.config.pair and pos.get("type") == "sell":
+                    total += float(pos.get("volume", 0.0))
+            return total
+        except Exception:
+            return 0.0
+
     def _total_executed_eur(self) -> float:
-        """Somme des achats RÉELS déjà exécutés, lue dans le journal
-        d'audit. Rend le plafond cumulé durable entre deux lancements :
-        même après un redémarrage, on ne dépasse pas le total autorisé."""
+        """Somme des OUVERTURES d'exposition réelles déjà exécutées (achats
+        longs ET ouvertures de shorts), lue dans le journal d'audit. Rend le
+        plafond cumulé durable entre deux lancements : même après un
+        redémarrage, on ne dépasse pas le total autorisé. Les fermetures ne
+        comptent pas : elles réduisent l'exposition."""
+        opening = {"open_long", "open_short"}
         total = 0.0
         for entry in self.audit_log.read_all():
-            if entry.event_type == "live_order_executed" and entry.payload.get("side") == "buy":
-                total += float(entry.payload.get("notional_eur", 0.0))
+            if entry.event_type != "live_order_executed":
+                continue
+            payload = entry.payload
+            intent = payload.get("intent")
+            # Rétrocompat : anciens journaux sans 'intent' → un buy = ouverture longue.
+            is_opening = intent in opening if intent else payload.get("side") == "buy"
+            if is_opening:
+                total += float(payload.get("notional_eur", 0.0))
         return total
 
     # -- étape 1 : proposition (n'exécute jamais) ----------------------------
@@ -112,29 +134,32 @@ class LiveTradingSession:
         momentum = _recent_momentum(data)
         held_volume = self._held_base_volume()
         holding = held_volume > _DUST
+        short_volume = self._open_short_volume() if self.config.allow_short else 0.0
+        short_open = short_volume > _DUST
 
-        # Deux plafonds gardent un achat :
+        # Deux plafonds gardent toute OUVERTURE d'exposition (achat long OU
+        # ouverture de short) :
         #  1. Plafond cumulé, lu dans le journal d'audit (peut se réinitialiser
         #     si le stockage est éphémère, ex. Render sans disque persistant).
-        #  2. Plafond de position DÉTENUE, lu en direct sur Kraken via le solde :
-        #     durable, survit à tout redémarrage, ne peut pas être contourné par
-        #     une perte du journal. C'est le vrai garde-fou de fond.
+        #  2. Plafond d'exposition, lu en direct sur Kraken (solde long +
+        #     positions de marge) : durable, survit à tout redémarrage. C'est
+        #     le vrai garde-fou de fond.
         already = self._total_executed_eur()
         cumulative_ok = (self.config.max_total_notional_eur - already) >= self.config.max_notional_per_order_eur
 
-        position_value = held_volume * last_price
-        would_be_position = position_value + self.config.max_notional_per_order_eur
+        exposure_value = held_volume * last_price + short_volume * last_price
+        would_be_position = exposure_value + self.config.max_notional_per_order_eur
         position_ok = would_be_position <= self.config.max_position_eur
 
         risk_ok = cumulative_ok and position_ok
         if not cumulative_ok:
             risk_reason = (
-                f"plafond cumulé atteint ({already:.2f} € exécutés sur "
+                f"plafond cumulé atteint ({already:.2f} € ouverts sur "
                 f"{self.config.max_total_notional_eur:.2f} € autorisés)"
             )
         elif not position_ok:
             risk_reason = (
-                f"plafond de position atteint (détenu ~{position_value:.2f} €, "
+                f"plafond d'exposition atteint (exposé ~{exposure_value:.2f} €, "
                 f"max {self.config.max_position_eur:.2f} €)"
             )
         else:
@@ -146,30 +171,26 @@ class LiveTradingSession:
             "risk_ok": risk_ok,
             "risk_reason": risk_reason,
             "last_price": last_price,
+            "short_open": short_open,
+            "allow_short": self.config.allow_short,
         })
 
-        order: Order | None = None
-        estimated_notional = 0.0
-        if decision.action == "buy" and not holding:
-            volume = round(self.config.max_notional_per_order_eur / last_price, 8)
-            order = Order(pair=self.config.pair, side="buy", volume=volume)
-            estimated_notional = volume * last_price
-        elif decision.action == "sell" and holding:
-            order = Order(pair=self.config.pair, side="sell", volume=round(held_volume, 8))
-            estimated_notional = held_volume * last_price
+        order, estimated_notional = self._build_order(decision.intent, last_price, held_volume, short_volume)
 
-        # Une VENTE réduit l'exposition (sortie de position, honorer un
-        # stop) : on ne la bloque jamais sur le plafond de taille, sinon on
-        # pourrait rester piégé dans une position. Un ACHAT augmente
-        # l'exposition : il passe tous les plafonds.
-        allowed, block_reason = self._evaluate(order, estimated_notional, risk_ok, risk_reason)
+        # Les OUVERTURES (open_long, open_short) augmentent l'exposition : elles
+        # passent tous les plafonds. Les FERMETURES (close_long, close_short)
+        # la réduisent : jamais bloquées par un plafond de taille.
+        allowed, block_reason = self._evaluate(order, decision.intent, estimated_notional, risk_ok, risk_reason)
 
         self.audit_log.log_event("live_order_proposed", {
             "mode": self.config.mode.value,
             "pair": self.config.pair,
             "signal": signal,
             "holding": holding,
+            "short_open": short_open,
             "action": decision.action,
+            "intent": decision.intent,
+            "leverage": order.leverage if order else None,
             "rationale": decision.rationale,
             "estimated_notional_eur": round(estimated_notional, 2),
             "allowed": allowed,
@@ -186,17 +207,41 @@ class LiveTradingSession:
             momentum=momentum,
         )
 
-    def _evaluate(self, order, estimated_notional, risk_ok, risk_reason):
+    def _build_order(self, intent: str, last_price: float, held_volume: float, short_volume: float):
+        """Construit l'ordre correspondant à l'intention de l'agent, avec le
+        levier pour les opérations de marge (short). Retourne (order, notionnel
+        estimé). Une intention 'hold' ou une taille nulle donne (None, 0)."""
+        per_order_eur = self.config.max_notional_per_order_eur
+        lev = self.config.leverage
+
+        if intent == "open_long":
+            volume = round(per_order_eur / last_price, 8)
+            return Order(pair=self.config.pair, side="buy", volume=volume), volume * last_price
+        if intent == "close_long" and held_volume > _DUST:
+            return Order(pair=self.config.pair, side="sell", volume=round(held_volume, 8)), held_volume * last_price
+        if intent == "open_short":
+            volume = round(per_order_eur / last_price, 8)
+            return Order(pair=self.config.pair, side="sell", volume=volume, leverage=lev), volume * last_price
+        if intent == "close_short" and short_volume > _DUST:
+            # Rachat de couverture : réduit la position de marge existante.
+            return (
+                Order(pair=self.config.pair, side="buy", volume=round(short_volume, 8), leverage=lev, reduce_only=True),
+                short_volume * last_price,
+            )
+        return None, 0.0
+
+    def _evaluate(self, order, intent, estimated_notional, risk_ok, risk_reason):
         """Retourne (autorisé, raison_de_blocage) pour un ordre proposé.
-        Achat : tous les plafonds. Vente : seulement la whitelist de paires
-        (une sortie ne doit jamais être bloquée par un plafond de taille)."""
+        Ouverture (long ou short) : tous les plafonds. Fermeture : seulement la
+        whitelist de paires (une sortie ne doit jamais être bloquée par un
+        plafond de taille, sous peine de rester piégé dans une position)."""
         if order is None:
             return (risk_ok, risk_reason)  # rien à exécuter ; on remonte quand même la raison risque
         if order.pair not in self.killswitch.allowed_pairs:
             return (False, f"Paire non whitelistée : {order.pair}")
-        if order.side == "sell":
+        if intent in ("close_long", "close_short"):
             return (True, None)
-        # achat
+        # ouverture (open_long, open_short)
         if not risk_ok:
             return (False, risk_reason)
         verdict = self.killswitch.check(order.pair, estimated_notional)
@@ -218,15 +263,23 @@ class LiveTradingSession:
             })
             return None
 
+        intent = proposal.decision.intent
+
+        # Garde-fou dédié au short : même en LIVE_REAL, un short réel exige
+        # l'interrupteur explicite allow_short. Sans lui, on refuse.
+        if intent == "open_short" and not self.config.allow_short:
+            self.audit_log.log_event("live_order_refused", {"reason": "short désactivé (allow_short=false)"})
+            return None
+
         # Re-vérification des plafonds juste avant l'envoi (l'état a pu
         # changer entre la proposition et la confirmation). Les plafonds de
-        # taille ne s'appliquent qu'aux achats ; une vente de sortie passe
+        # taille ne s'appliquent qu'aux OUVERTURES ; une fermeture passe
         # toujours si la paire est whitelistée.
         if proposal.order.pair not in self.killswitch.allowed_pairs:
             self.audit_log.log_event("live_order_refused", {"reason": f"paire non whitelistée : {proposal.order.pair}"})
             return None
 
-        if proposal.order.side == "buy":
+        if intent in ("open_long", "open_short"):
             verdict = self.killswitch.check(proposal.order.pair, proposal.estimated_notional_eur)
             if not verdict.allowed:
                 self.audit_log.log_event("live_order_refused", {"reason": f"kill switch : {verdict.reason}"})
@@ -238,11 +291,11 @@ class LiveTradingSession:
                               f"> {self.config.max_total_notional_eur:.2f})",
                 })
                 return None
-            # Plafond de position durable, relu sur Kraken juste avant l'envoi.
-            position_value = self._held_base_volume() * proposal.last_price
-            if position_value + proposal.estimated_notional_eur > self.config.max_position_eur:
+            # Plafond d'exposition durable (long + short), relu sur Kraken.
+            exposure_value = (self._held_base_volume() + self._open_short_volume()) * proposal.last_price
+            if exposure_value + proposal.estimated_notional_eur > self.config.max_position_eur:
                 self.audit_log.log_event("live_order_refused", {
-                    "reason": f"plafond de position dépassé (détenu ~{position_value:.2f} + "
+                    "reason": f"plafond d'exposition dépassé (exposé ~{exposure_value:.2f} + "
                               f"{proposal.estimated_notional_eur:.2f} > {self.config.max_position_eur:.2f})",
                 })
                 return None
@@ -270,6 +323,8 @@ class LiveTradingSession:
         self.audit_log.log_event("live_order_executed", {
             "pair": proposal.order.pair,
             "side": proposal.order.side,
+            "intent": intent,
+            "leverage": proposal.order.leverage,
             "volume": proposal.order.volume,
             "notional_eur": proposal.estimated_notional_eur,
             "order_id": result.order_id,
