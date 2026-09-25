@@ -115,6 +115,11 @@ def index() -> str:
     return _PAGE
 
 
+@app.get("/a-propos", response_class=HTMLResponse)
+def about() -> str:
+    return _ABOUT_PAGE
+
+
 _PAGE = """<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -134,9 +139,11 @@ _PAGE = """<!DOCTYPE html>
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
   code, .mono, output, .value, td { font-family:"IBM Plex Mono",monospace; }
-  header { padding:22px 24px; border-bottom:1px solid var(--border); }
-  header h1 { margin:0; font-size:21px; letter-spacing:-.01em; }
-  header p { margin:6px 0 0; color:var(--muted); font-size:13px; max-width:70ch; line-height:1.5; }
+  header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
+  header .titles h1 { margin:0; font-size:21px; letter-spacing:-.01em; }
+  header .titles p { margin:6px 0 0; color:var(--muted); font-size:13px; max-width:70ch; line-height:1.5; }
+  header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; white-space:nowrap; }
+  header nav a:hover { color:var(--text); border-color:var(--accent); }
   main { max-width:1080px; margin:0 auto; padding:22px 16px 60px; display:grid; gap:16px; }
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px; }
 
@@ -217,8 +224,11 @@ _PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>AVONAM — Tableau de bord (simulation)</h1>
-  <p>Backtest et paper trading en direct, sur données d'exemple ou sur données Kraken réelles, avec explication de chaque chiffre affiché. Aucun ordre réel, aucune clé API, aucune connexion bancaire — voir « Comprendre ce tableau de bord » en bas de page.</p>
+  <div class="titles">
+    <h1>AVONAM — Tableau de bord (simulation)</h1>
+    <p>Backtest et paper trading en direct, sur données d'exemple ou sur données Kraken réelles, avec explication de chaque chiffre affiché. Aucun ordre réel, aucune clé API, aucune connexion bancaire — voir « Comprendre ce tableau de bord » en bas de page.</p>
+  </div>
+  <nav><a href="/a-propos">À propos — à quoi sert ce site ?</a></nav>
 </header>
 <main>
 
@@ -495,5 +505,108 @@ async function runBacktest() {
 setupAutoRefresh();
 runBacktest();
 </script>
+</body>
+</html>"""
+
+
+_ABOUT_PAGE = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AVONAM — À propos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#0e1117; --panel:#161b24; --panel-2:#0d1420; --border:#252c38;
+    --text:#e9edf4; --muted:#8b96a8; --accent:#2a78d6;
+    --good:#17c317; --critical:#e66767; --good-bg:rgba(23,195,23,.12); --critical-bg:rgba(230,103,103,.12);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
+  header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:21px; letter-spacing:-.01em; }
+  header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; white-space:nowrap; }
+  header nav a:hover { color:var(--text); border-color:var(--accent); }
+  main { max-width:760px; margin:0 auto; padding:32px 16px 60px; }
+  h2 { font-size:16px; margin:34px 0 12px; }
+  h2:first-of-type { margin-top:0; }
+  p, li { font-size:14.5px; line-height:1.7; color:#c7cedb; }
+  ul { padding-left:20px; margin:10px 0; }
+  li { margin-bottom:6px; }
+  .lede { font-size:16px; color:var(--text); line-height:1.6; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px 20px; margin:14px 0; }
+  .card.good { border-color:rgba(23,195,23,.3); }
+  .card.critical { border-color:rgba(230,103,103,.3); }
+  .card h3 { margin:0 0 8px; font-size:14px; }
+  .card.good h3 { color:var(--good); }
+  .card.critical h3 { color:var(--critical); }
+  .badge-row { display:flex; gap:8px; flex-wrap:wrap; margin:14px 0; }
+  .badge { font-size:12px; padding:5px 11px; border-radius:999px; background:var(--panel-2); border:1px solid var(--border); color:var(--muted); }
+  a.back { display:inline-block; margin-top:30px; color:var(--accent); text-decoration:none; font-size:14px; }
+  a.back:hover { text-decoration:underline; }
+  code { font-family:"IBM Plex Mono",monospace; background:var(--panel-2); padding:1px 5px; border-radius:4px; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AVONAM — À propos</h1>
+  <nav><a href="/">← Retour au tableau de bord</a></nav>
+</header>
+<main>
+  <p class="lede">AVONAM est un logiciel pédagogique de trading algorithmique. Il sert à apprendre et tester des stratégies de trading (achat/vente automatique selon des règles), sans jamais risquer d'argent réel sur ce site.</p>
+
+  <h2>Ce que fait le site, concrètement</h2>
+  <p>Une stratégie simple (croisement de deux moyennes mobiles) analyse des prix, décide quand « acheter » et « vendre », et le site simule ce que ça aurait donné : gains, pertes, nombre de trades, etc. Deux modes :</p>
+  <ul>
+    <li><b>Données d'exemple</b> : un historique fixe généré pour la démonstration, toujours le même.</li>
+    <li><b>Kraken (BTC/EUR, ETH/EUR)</b> : les vraies bougies de prix du marché crypto, en lecture seule, pour voir comment la stratégie se comporterait sur des conditions de marché actuelles.</li>
+  </ul>
+
+  <div class="badge-row">
+    <span class="badge">Aucun argent réel</span>
+    <span class="badge">Aucun ordre envoyé</span>
+    <span class="badge">Aucune clé API sur ce site</span>
+    <span class="badge">Aucune connexion bancaire</span>
+  </div>
+
+  <h2>Ce qui est automatique aujourd'hui</h2>
+  <div class="card good">
+    <h3>✓ Automatisé, sans risque</h3>
+    <ul>
+      <li>La récupération des prix Kraken en temps réel (toutes les 5 minutes), sans intervention.</li>
+      <li>Le calcul de la stratégie et la simulation des trades (paper trading) sur ces prix.</li>
+      <li>Le calcul des statistiques (rendement, drawdown, ratio de Sharpe, etc.) et leur affichage.</li>
+      <li>La gestion du risque interne à la simulation : taille de position, stop-loss, take-profit, arrêt automatique si la perte simulée dépasse un seuil (kill switch).</li>
+    </ul>
+    <p style="margin-bottom:0">Tout ça tourne en boucle sans qu'aucun humain n'ait à cliquer sur quoi que ce soit — mais rien de tout ça ne touche à de l'argent réel : c'est une simulation qui se répète automatiquement, pas un robot de trading.</p>
+  </div>
+
+  <h2>Ce qui n'est volontairement PAS automatique</h2>
+  <div class="card critical">
+    <h3>✗ Jamais automatisé ici, par choix</h3>
+    <ul>
+      <li><b>Aucun ordre réel</b> n'est jamais envoyé à Kraken ou à une banque depuis ce site. Le code capable de le faire existe dans le projet (modules <code>bank/</code> et <code>broker/</code>), mais n'est pas branché sur cette interface publique.</li>
+      <li><b>Aucune clé API</b> n'est configurée sur ce serveur : même en cas de faille, il n'y a rien à voler ici.</li>
+      <li><b>Aucune authentification</b> n'existe sur ce site : n'importe qui avec le lien peut le consulter. Ce n'est pas grave pour de la simulation en lecture seule, ce serait inacceptable pour du trading réel.</li>
+    </ul>
+    <p style="margin-bottom:0">Ce n'est pas une limite technique qu'il suffirait de lever : c'est une décision de sécurité. Automatiser du trading avec de l'argent réel, sans supervision, sur un serveur public non protégé, expose à des pertes qu'aucun garde-fou logiciel ne rattrape complètement.</p>
+  </div>
+
+  <h2>Et si on veut aller plus loin, vers du réel ?</h2>
+  <p>C'est possible, mais ça demande des étapes conscientes, jamais un interrupteur qu'on bascule d'un coup :</p>
+  <ul>
+    <li>Ouvrir un compte chez un courtier ou un exchange (ex. Kraken), avec une clé API dont la permission de retrait reste désactivée.</li>
+    <li>Valider le code d'exécution en local, sur votre propre machine, jamais sur un serveur public — voir <code>examples/run_kraken_live_check.py</code>.</li>
+    <li>Semaines de validation en paper trading sur données réelles avant le moindre ordre réel.</li>
+    <li>Un premier ordre réel avec un montant minime, sous supervision humaine directe — jamais lancé tout seul par un script.</li>
+  </ul>
+  <p>Chaque étape reste une décision volontaire, prise consciemment, jamais quelque chose que le logiciel déclenche de lui-même.</p>
+
+  <a class="back" href="/">← Retour au tableau de bord</a>
+</main>
 </body>
 </html>"""
