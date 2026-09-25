@@ -40,6 +40,30 @@ def sharpe_ratio(equity_curve: pd.Series, periods_per_year: int = 252, risk_free
     return float(np.sqrt(periods_per_year) * excess.mean() / returns.std(ddof=0))
 
 
+def sortino_ratio(equity_curve: pd.Series, periods_per_year: int = 252) -> float:
+    """Comme le Sharpe, mais ne pénalise QUE la volatilité à la baisse. Plus
+    juste : un rendement qui monte fort n'est pas un « risque »."""
+    returns = equity_curve.pct_change().dropna()
+    downside = returns[returns < 0]
+    if returns.empty or downside.std(ddof=0) == 0:
+        return 0.0
+    return float(np.sqrt(periods_per_year) * returns.mean() / downside.std(ddof=0))
+
+
+def max_drawdown_duration(equity_curve: pd.Series) -> int:
+    """Plus longue série de barres passées SOUS un précédent sommet : combien
+    de temps la stratégie reste « dans le rouge » avant de se refaire."""
+    if equity_curve.empty:
+        return 0
+    peak = equity_curve.cummax()
+    under_water = equity_curve < peak
+    longest = current = 0
+    for below in under_water:
+        current = current + 1 if below else 0
+        longest = max(longest, current)
+    return int(longest)
+
+
 def trade_stats(trades: list) -> dict:
     """`trades` est une liste d'objets Trade (voir engine.py) déjà fermés."""
     if not trades:
@@ -58,11 +82,21 @@ def trade_stats(trades: list) -> dict:
     gross_loss = abs(sum(losses))
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
+    avg_win = float(np.mean(wins)) if wins else 0.0
+    avg_loss = float(np.mean(losses)) if losses else 0.0
+    win_rate = len(wins) / len(trades)
+    # Espérance : gain moyen attendu par trade, en combinant fréquence et
+    # taille des gains/pertes. Positive = la stratégie gagne en moyenne.
+    expectancy = win_rate * avg_win + (1 - win_rate) * avg_loss
+
     return {
         "num_trades": len(trades),
-        "win_rate_pct": len(wins) / len(trades) * 100,
+        "win_rate_pct": win_rate * 100,
         "profit_factor": profit_factor,
         "avg_pnl": float(np.mean(pnls)),
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "expectancy": expectancy,
     }
 
 
@@ -70,7 +104,9 @@ def compute_all_metrics(equity_curve: pd.Series, trades: list) -> dict:
     metrics = {
         "total_return_pct": total_return_pct(equity_curve),
         "max_drawdown_pct": max_drawdown_pct(equity_curve),
+        "max_drawdown_duration": max_drawdown_duration(equity_curve),
         "sharpe_ratio": sharpe_ratio(equity_curve),
+        "sortino_ratio": sortino_ratio(equity_curve),
     }
     metrics.update(trade_stats(trades))
     return metrics

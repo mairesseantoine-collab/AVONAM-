@@ -31,6 +31,7 @@ import os
 import secrets
 from pathlib import Path
 
+import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -130,10 +131,35 @@ def _proposal_payload(session, config) -> dict:
     }
 
 
+STRATEGY_LABELS = {
+    "simple": "Croisement de moyennes (SMA)",
+    "filtered": "SMA filtrée (tendance/frais)",
+    "rsi": "RSI (retour à la moyenne)",
+}
+
+
+def _load_market_data(source: str, pair: str):
+    """Retourne (data, error). Kraken en lecture seule, ou données démo."""
+    if source == "kraken":
+        if pair not in KRAKEN_PAIRS:
+            return None, f"Paire non autorisée : {pair}"
+        try:
+            return fetch_ohlc_dataframe(pair, interval_minutes=60), None
+        except Exception as exc:
+            return None, f"Impossible de récupérer les données Kraken : {exc}"
+    return load_csv(DATA_PATH), None
+
+
+def _downsample_index(n: int, target: int = 320):
+    step = max(1, n // target)
+    return range(0, n, step)
+
+
 @app.get("/api/backtest")
 def run_backtest(
     source: str = Query("demo"),
     pair: str = Query("XBTEUR"),
+    strategy: str = Query("simple"),
     fast_period: int = Query(20, ge=1),
     slow_period: int = Query(50, ge=2),
     initial_capital: float = Query(10_000, gt=0),
@@ -142,22 +168,16 @@ def run_backtest(
     take_profit_pct: float = Query(4.0, gt=0),
     max_drawdown_pct: float = Query(20.0, gt=0),
 ) -> dict:
-    if fast_period >= slow_period:
+    from broker.live.strategy import build_strategy
+
+    if strategy in ("simple", "filtered") and fast_period >= slow_period:
         return {"error": "La SMA rapide doit être strictement plus courte que la SMA lente."}
 
-    if source == "kraken":
-        if pair not in KRAKEN_PAIRS:
-            return {"error": f"Paire non autorisée : {pair}"}
-        try:
-            # Endpoint public Kraken : aucune clé API, aucune écriture,
-            # uniquement des bougies OHLC en lecture seule.
-            data = fetch_ohlc_dataframe(pair, interval_minutes=60)
-        except Exception as exc:  # réseau Kraken indisponible, etc.
-            return {"error": f"Impossible de récupérer les données Kraken : {exc}"}
-    else:
-        data = load_csv(DATA_PATH)
+    data, error = _load_market_data(source, pair)
+    if error:
+        return {"error": error}
 
-    strategy = SMACrossoverStrategy(fast_period=fast_period, slow_period=slow_period)
+    strat = build_strategy(strategy, fast=fast_period, slow=slow_period)
     risk_manager = RiskManager(
         initial_capital=initial_capital,
         risk_per_trade_pct=risk_per_trade_pct,
@@ -165,19 +185,53 @@ def run_backtest(
         take_profit_pct=take_profit_pct,
         max_drawdown_pct=max_drawdown_pct,
     )
-    engine = BacktestEngine(risk_manager)
-    result = engine.run(data, strategy)
+    result = BacktestEngine(risk_manager).run(data, strat)
+
+    # Série de prix (sous-échantillonnée) avec les indicateurs superposés,
+    # pour VOIR pourquoi la stratégie agit.
+    close = data["close"]
+    idx = list(_downsample_index(len(data)))
+    price_series = []
+    fast_sma = close.rolling(fast_period).mean()
+    slow_sma = close.rolling(slow_period).mean()
+    rsi_series = None
+    if strategy == "rsi":
+        from avonam.strategy.rsi import compute_rsi
+        rsi_vals = compute_rsi(close)
+    for i in idx:
+        d = data.index[i]
+        row = {"date": d.strftime("%Y-%m-%d %H:%M"), "price": round(float(close.iloc[i]), 2)}
+        if strategy in ("simple", "filtered"):
+            if not pd.isna(fast_sma.iloc[i]):
+                row["fast"] = round(float(fast_sma.iloc[i]), 2)
+            if not pd.isna(slow_sma.iloc[i]):
+                row["slow"] = round(float(slow_sma.iloc[i]), 2)
+        if strategy == "rsi":
+            row["rsi"] = round(float(rsi_vals.iloc[i]), 1)
+        price_series.append(row)
+
+    markers = [
+        {"date": t.entry_date.strftime("%Y-%m-%d %H:%M"), "price": round(t.entry_price, 2), "kind": "buy"}
+        for t in result.trades
+    ] + [
+        {"date": t.exit_date.strftime("%Y-%m-%d %H:%M"), "price": round(t.exit_price, 2), "kind": "sell"}
+        for t in result.trades if t.exit_date
+    ]
 
     return {
         "source": source,
         "pair": pair if source == "kraken" else None,
-        "last_price": round(float(data["close"].iloc[-1]), 2),
+        "strategy": strategy,
+        "strategy_label": STRATEGY_LABELS.get(strategy, strategy),
+        "last_price": round(float(close.iloc[-1]), 2),
         "as_of": data.index[-1].isoformat(),
+        "price_series": price_series,
+        "markers": markers,
         "equity_curve": [
             {"date": d.strftime("%Y-%m-%d %H:%M"), "equity": round(v, 2)}
             for d, v in result.equity_curve.items()
         ],
-        "metrics": {k: round(v, 3) if isinstance(v, float) else v for k, v in result.metrics.items()},
+        "metrics": {k: (round(v, 3) if isinstance(v, float) else v) for k, v in result.metrics.items()},
         "trades": [
             {
                 "entry_date": t.entry_date.strftime("%Y-%m-%d %H:%M"),
@@ -192,6 +246,37 @@ def run_backtest(
         ],
         "halted_at": result.halted_at.strftime("%Y-%m-%d %H:%M") if result.halted_at else None,
     }
+
+
+@app.get("/api/compare")
+def compare_strategies(
+    source: str = Query("demo"),
+    pair: str = Query("XBTEUR"),
+    initial_capital: float = Query(10_000, gt=0),
+) -> dict:
+    """Compare les trois stratégies sur les mêmes données, côte à côte."""
+    from broker.live.strategy import build_strategy
+
+    data, error = _load_market_data(source, pair)
+    if error:
+        return {"error": error}
+
+    rows = []
+    for name in ("simple", "filtered", "rsi"):
+        strat = build_strategy(name, fast=20, slow=50)
+        result = BacktestEngine(RiskManager(initial_capital=initial_capital)).run(data, strat)
+        m = result.metrics
+        rows.append({
+            "strategy": name,
+            "label": STRATEGY_LABELS[name],
+            "total_return_pct": round(m["total_return_pct"], 2),
+            "max_drawdown_pct": round(m["max_drawdown_pct"], 2),
+            "sharpe_ratio": round(m["sharpe_ratio"], 2),
+            "num_trades": m["num_trades"],
+            "win_rate_pct": round(m["win_rate_pct"], 1),
+            "profit_factor": round(m["profit_factor"], 2) if m["profit_factor"] != float("inf") else None,
+        })
+    return {"source": source, "pair": pair if source == "kraken" else None, "results": rows}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -348,6 +433,15 @@ _PAGE = """<!DOCTYPE html>
   .good { color:var(--good); } .critical { color:var(--critical); }
 
   .chart-box { position:relative; }
+  .chart-title-row { font-size:13px; font-weight:600; margin-bottom:10px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .chart-legend { font-size:11px; color:var(--muted); font-weight:400; }
+  .chart-legend b { font-weight:600; }
+  .table-scroll { overflow-x:auto; }
+  .price-line { fill:none; stroke:var(--text); stroke-width:1.4; opacity:.8; }
+  .sma-fast { fill:none; stroke:var(--accent-2); stroke-width:1.6; }
+  .sma-slow { fill:none; stroke:var(--warn); stroke-width:1.6; }
+  .marker-buy { fill:var(--good); stroke:var(--panel); stroke-width:1.5; }
+  .marker-sell { fill:var(--critical); stroke:var(--panel); stroke-width:1.5; }
   svg { width:100%; height:300px; display:block; overflow:visible; }
   svg text { fill:var(--muted); font-size:11px; font-family:"IBM Plex Mono",monospace; }
   .gridline { stroke:var(--border); stroke-width:1; }
@@ -412,9 +506,25 @@ _PAGE = """<!DOCTYPE html>
         <label class="toggle"><input type="checkbox" id="auto-refresh-toggle" checked> Actualisation auto. (5 min)</label>
         <button type="button" class="refresh-btn" id="refresh-now">Actualiser maintenant</button>
       </div>
+
+      <div style="font-size:12px;color:var(--muted);margin:16px 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Stratégie</div>
+      <div class="pills" id="strategy-pills">
+        <button type="button" class="pill active" data-strategy="simple">Moyennes (SMA)</button>
+        <button type="button" class="pill" data-strategy="filtered">SMA filtrée</button>
+        <button type="button" class="pill" data-strategy="rsi">RSI</button>
+        <button type="button" class="refresh-btn" id="compare-btn" style="margin-left:auto;">Comparer les 3</button>
+      </div>
     </div>
 
     <div id="soon-note" class="soon-note" style="display:none;"></div>
+  </div>
+
+  <div id="compare-panel" class="panel" style="display:none;">
+    <div style="font-size:13px;font-weight:600;margin-bottom:10px;">Comparaison des stratégies (mêmes données)</div>
+    <div class="table-scroll"><table id="compare-table"><thead><tr>
+      <th>Stratégie</th><th>Rendement</th><th>Drawdown max</th><th>Sharpe</th><th>Trades</th><th>Win rate</th><th>Profit factor</th>
+    </tr></thead><tbody></tbody></table></div>
+    <p class="muted-note">Rappel : un meilleur score sur ces données passées ne garantit rien pour l'avenir. C'est un outil de comparaison, pas une prédiction.</p>
   </div>
 
   <div id="crypto-analysis">
@@ -459,6 +569,12 @@ _PAGE = """<!DOCTYPE html>
   </div>
 
   <div class="panel">
+    <div class="chart-title-row"><span id="price-title">Prix et signaux</span> <span class="chart-legend" id="price-legend"></span></div>
+    <svg id="price-chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
+  </div>
+
+  <div class="panel">
+    <div class="chart-title-row">Courbe d'équity (capital simulé)</div>
     <div class="chart-box">
       <svg id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
       <div class="chart-tooltip" id="chart-tooltip"><div class="t-date" id="tt-date"></div><div id="tt-value"></div></div>
@@ -510,6 +626,41 @@ const ttDate = document.getElementById('tt-date');
 const ttValue = document.getElementById('tt-value');
 const tbody = document.querySelector('#trades tbody');
 const capitalInput = document.getElementById('initial_capital');
+const priceChart = document.getElementById('price-chart');
+const priceLegend = document.getElementById('price-legend');
+const strategyPillsEl = document.getElementById('strategy-pills');
+const compareBtn = document.getElementById('compare-btn');
+const comparePanel = document.getElementById('compare-panel');
+let currentStrategy = 'simple';
+
+strategyPillsEl.addEventListener('click', e => {
+  const btn = e.target.closest('.pill');
+  if (!btn) return;
+  [...strategyPillsEl.querySelectorAll('.pill')].forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  currentStrategy = btn.dataset.strategy;
+  runBacktest();
+});
+
+compareBtn.addEventListener('click', async () => {
+  const params = new URLSearchParams({ source: state.source, pair: state.pair, initial_capital: capitalInput.value });
+  compareBtn.textContent = '...';
+  const resp = await fetch('/api/compare?' + params.toString());
+  const d = await resp.json();
+  compareBtn.textContent = 'Comparer les 3';
+  if (d.error) { alert(d.error); return; }
+  const body = document.querySelector('#compare-table tbody');
+  const best = Math.max(...d.results.map(r => r.total_return_pct));
+  body.innerHTML = d.results.map(r => `
+    <tr>
+      <td>${r.label}${r.total_return_pct === best ? ' ★' : ''}</td>
+      <td class="${r.total_return_pct >= 0 ? 'good' : 'critical'}">${r.total_return_pct}%</td>
+      <td class="critical">${r.max_drawdown_pct}%</td>
+      <td>${r.sharpe_ratio}</td><td>${r.num_trades}</td><td>${r.win_rate_pct}%</td>
+      <td>${r.profit_factor ?? '∞'}</td>
+    </tr>`).join('');
+  comparePanel.style.display = 'block';
+});
 
 const SLIDER_IDS = ['fast_period','slow_period','risk_per_trade_pct','stop_loss_pct','take_profit_pct','max_drawdown_pct'];
 const SLIDER_SUFFIX = { fast_period:'', slow_period:'', risk_per_trade_pct:'%', stop_loss_pct:'%', take_profit_pct:'%', max_drawdown_pct:'%' };
@@ -676,12 +827,66 @@ function renderStats(m) {
   const cls = v => v >= 0 ? 'good' : 'critical';
   statsEl.innerHTML = `
     <div class="stat"><div class="label">Rendement total <span class="info" tabindex="0" data-tip="Variation du capital sur toute la période, en %. Positif = gain, négatif = perte.">?</span></div><div class="value ${cls(m.total_return_pct)}">${fmt(m.total_return_pct)}%</div></div>
+    <div class="stat"><div class="label">Espérance / trade <span class="info" tabindex="0" data-tip="Gain moyen attendu par trade, combinant fréquence et taille des gains/pertes. Positif = la stratégie gagne en moyenne.">?</span></div><div class="value ${cls(m.expectancy)}">${fmt(m.expectancy)}</div></div>
     <div class="stat"><div class="label">Drawdown max <span class="info" tabindex="0" data-tip="Pire chute du capital depuis son plus haut. Un chiffre élevé est difficile à supporter psychologiquement.">?</span></div><div class="value critical">${fmt(m.max_drawdown_pct)}%</div></div>
-    <div class="stat"><div class="label">Ratio de Sharpe <span class="info" tabindex="0" data-tip="Rendement ajusté du risque. >1 correct, >2 très bon — peu fiable sur peu de trades.">?</span></div><div class="value">${fmt(m.sharpe_ratio)}</div></div>
+    <div class="stat"><div class="label">Durée du drawdown <span class="info" tabindex="0" data-tip="Plus longue série de barres passées sous un précédent sommet : combien de temps la stratégie reste dans le rouge avant de se refaire.">?</span></div><div class="value">${m.max_drawdown_duration}</div></div>
+    <div class="stat"><div class="label">Sharpe <span class="info" tabindex="0" data-tip="Rendement ajusté du risque total. >1 correct, >2 très bon — peu fiable sur peu de trades.">?</span></div><div class="value">${fmt(m.sharpe_ratio)}</div></div>
+    <div class="stat"><div class="label">Sortino <span class="info" tabindex="0" data-tip="Comme le Sharpe mais ne pénalise que la volatilité à la baisse. Souvent plus juste.">?</span></div><div class="value">${fmt(m.sortino_ratio)}</div></div>
     <div class="stat"><div class="label">Trades <span class="info" tabindex="0" data-tip="Nombre total d'allers-retours (entrée puis sortie) sur la période.">?</span></div><div class="value">${m.num_trades}</div></div>
     <div class="stat"><div class="label">Win rate <span class="info" tabindex="0" data-tip="Pourcentage de trades gagnants. Peut être bas et quand même rentable, voir profit factor.">?</span></div><div class="value">${fmt(m.win_rate_pct)}%</div></div>
     <div class="stat"><div class="label">Profit factor <span class="info" tabindex="0" data-tip="Somme des gains ÷ somme des pertes. >1 = rentable sur cette période.">?</span></div><div class="value">${fmt(m.profit_factor)}</div></div>
+    <div class="stat"><div class="label">Gain / perte moyens <span class="info" tabindex="0" data-tip="Montant moyen d'un trade gagnant vs perdant. Un bon système gagne plus qu'il ne perd, en moyenne.">?</span></div><div class="value"><span class="good">${fmt(m.avg_win)}</span> / <span class="critical">${fmt(m.avg_loss)}</span></div></div>
   `;
+}
+
+// -- graphique des prix : prix + moyennes + marqueurs d'achat/vente --
+function renderPriceChart(series, markers, strategy) {
+  priceChart.innerHTML = '';
+  if (!series || !series.length) return;
+  const W = 1000, H = 300, padL = 60, padR = 16, padT = 16, padB = 26;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const ns = 'http://www.w3.org/2000/svg';
+  const el = (t, a) => { const e = document.createElementNS(ns, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+  const prices = series.map(p => p.price);
+  const minV = Math.min(...prices), maxV = Math.max(...prices);
+  const span = (maxV - minV) || 1;
+  const dateToX = {};
+  series.forEach((p, i) => { dateToX[p.date] = padL + (i / (series.length - 1)) * plotW; });
+  const xAt = i => padL + (i / (series.length - 1)) * plotW;
+  const yAt = v => padT + plotH - ((v - minV) / span) * plotH;
+
+  for (let s = 0; s <= 3; s++) {
+    const v = minV + span * s / 3, y = yAt(v);
+    priceChart.appendChild(el('line', { x1:padL, x2:W-padR, y1:y, y2:y, class:'gridline' }));
+    const t = el('text', { x:6, y:y+4 }); t.textContent = Math.round(v).toLocaleString('fr-BE'); priceChart.appendChild(t);
+  }
+
+  function path(key, cls) {
+    let d = '', started = false;
+    series.forEach((p, i) => {
+      if (p[key] == null) return;
+      d += (started ? 'L' : 'M') + ` ${xAt(i)} ${yAt(p[key])} `; started = true;
+    });
+    if (d) priceChart.appendChild(el('path', { d, class: cls }));
+  }
+  path('price', 'price-line');
+  if (strategy === 'simple' || strategy === 'filtered') { path('fast', 'sma-fast'); path('slow', 'sma-slow'); }
+
+  (markers || []).forEach(mk => {
+    const x = dateToX[mk.date];
+    if (x == null) return;
+    priceChart.appendChild(el('circle', { cx:x, cy:yAt(mk.price), r:3.5, class: mk.kind === 'buy' ? 'marker-buy' : 'marker-sell' }));
+  });
+
+  priceChart.appendChild(el('text', { x:padL, y:H-6 })).textContent = series[0].date;
+  priceChart.appendChild(el('text', { x:W-padR, y:H-6, 'text-anchor':'end' })).textContent = series[series.length-1].date;
+
+  if (strategy === 'rsi') {
+    priceLegend.innerHTML = '<b style="color:var(--text)">— prix</b> · <span style="color:var(--good)">● achat</span> · <span style="color:var(--critical)">● vente</span> · RSI : achat en survente, vente en surachat';
+  } else {
+    priceLegend.innerHTML = '<b style="color:var(--text)">— prix</b> · <span style="color:var(--accent-2)">— SMA rapide</span> · <span style="color:var(--warn)">— SMA lente</span> · <span style="color:var(--good)">● achat</span> · <span style="color:var(--critical)">● vente</span>';
+  }
 }
 
 function renderTrades(trades) {
@@ -696,7 +901,7 @@ function renderTrades(trades) {
 }
 
 async function runBacktest() {
-  const params = new URLSearchParams({ source: state.source, pair: state.pair, initial_capital: capitalInput.value });
+  const params = new URLSearchParams({ source: state.source, pair: state.pair, strategy: currentStrategy, initial_capital: capitalInput.value });
   SLIDER_IDS.forEach(id => params.set(id, document.getElementById(id).value));
 
   errorBannerEl.classList.remove('show');
@@ -712,12 +917,14 @@ async function runBacktest() {
   lastFetchAt = Date.now();
   updateFreshness();
 
+  const stratLabel = data.strategy_label ? ` · stratégie : ${data.strategy_label}` : '';
   if (data.source === 'kraken') {
-    sourceNoteEl.innerHTML = `Kraken — ${data.pair} · dernier prix <span class="price-badge">${fmt(data.last_price)} €</span> · bougies horaires, paper trading, aucune clé API, aucun ordre.`;
+    sourceNoteEl.innerHTML = `Kraken — ${data.pair} · dernier prix <span class="price-badge">${fmt(data.last_price)} €</span>${stratLabel} · paper trading, aucune clé API, aucun ordre.`;
   } else {
-    sourceNoteEl.textContent = "Données d'exemple synthétiques (statiques, générées pour la démo).";
+    sourceNoteEl.textContent = `Données d'exemple synthétiques (statiques)${stratLabel}.`;
   }
 
+  renderPriceChart(data.price_series, data.markers, data.strategy);
   renderChart(data.equity_curve);
   renderStats(data.metrics);
   renderTrades(data.trades);

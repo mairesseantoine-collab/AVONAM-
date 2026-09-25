@@ -17,13 +17,20 @@ import os
 
 from avonam.strategy.base import Strategy
 from avonam.strategy.filtered_sma import FilteredSMAStrategy
+from avonam.strategy.rsi import RSIStrategy
 from avonam.strategy.sma_crossover import SMACrossoverStrategy
+
+
+def build_strategy(name: str, fast: int = 20, slow: int = 50) -> Strategy:
+    name = (name or "filtered").strip().lower()
+    if name == "simple":
+        return SMACrossoverStrategy(fast_period=fast, slow_period=slow)
+    if name == "rsi":
+        return RSIStrategy()
+    return FilteredSMAStrategy(fast_period=fast, slow_period=slow)
 
 
 def build_live_strategy() -> Strategy:
     fast = int(os.environ.get("AVONAM_FAST_PERIOD", 20))
     slow = int(os.environ.get("AVONAM_SLOW_PERIOD", 50))
-    choice = os.environ.get("AVONAM_STRATEGY", "filtered").strip().lower()
-    if choice == "simple":
-        return SMACrossoverStrategy(fast_period=fast, slow_period=slow)
-    return FilteredSMAStrategy(fast_period=fast, slow_period=slow)
+    return build_strategy(os.environ.get("AVONAM_STRATEGY", "filtered"), fast, slow)
