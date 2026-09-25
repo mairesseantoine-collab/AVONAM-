@@ -53,10 +53,23 @@ class RuleBasedAgent:
         risk_reason = context.get("risk_reason")
         last_price = context["last_price"]
 
+        # Une VENTE de sortie est évaluée EN PREMIER, avant la barrière de
+        # risque : elle réduit l'exposition (honorer un stop, sortir d'une
+        # position), elle ne doit donc jamais être bloquée par les plafonds
+        # d'achat, sous peine de rester piégé dans une position.
+        if signal != 1 and holding:
+            return AgentDecision(
+                "sell", 0.6,
+                f"Le signal haussier a disparu (signal={signal}) alors qu'une position est ouverte : "
+                f"proposition de sortie au prix {last_price:.2f}.",
+            )
+
+        # La barrière de risque ne concerne que l'ouverture de nouvelles
+        # positions (achats).
         if not risk_ok:
             return AgentDecision(
                 "hold", 0.0,
-                f"Attente : la couche de risque bloque toute nouvelle position ({risk_reason}).",
+                f"Attente : la couche de risque bloque tout nouvel achat ({risk_reason}).",
             )
 
         if signal == 1 and not holding:
@@ -64,13 +77,6 @@ class RuleBasedAgent:
                 "buy", 0.6,
                 f"Signal haussier de la stratégie (croisement de moyennes) au prix {last_price:.2f}, "
                 f"aucune position ouverte : proposition d'achat dans les plafonds.",
-            )
-
-        if signal != 1 and holding:
-            return AgentDecision(
-                "sell", 0.6,
-                f"Le signal haussier a disparu (signal={signal}) alors qu'une position est ouverte : "
-                f"proposition de sortie au prix {last_price:.2f}.",
             )
 
         if holding:

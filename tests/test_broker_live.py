@@ -21,7 +21,7 @@ class _FixedSignalStrategy:
         return pd.Series(self._signal, index=data.index, dtype=int)
 
 
-def _build(tmp_path, *, mode, signal=1, holding=False, ks_order=12.0, ks_day=30.0, total_eur=50.0):
+def _build(tmp_path, *, mode, signal=1, holding=False, ks_order=12.0, ks_day=30.0, total_eur=50.0, position_eur=50.0):
     transport = FakeKrakenTransport()
     transport.balances["XXBT"] = 0.05 if holding else 0.0
     client = KrakenClient(transport, api_key="k", api_secret="c2VjcmV0")
@@ -32,6 +32,7 @@ def _build(tmp_path, *, mode, signal=1, holding=False, ks_order=12.0, ks_day=30.
     config = LiveTradingConfig(
         mode=mode, pair=PAIR, max_notional_per_order_eur=10.0,
         max_notional_per_day_eur=30.0, max_total_notional_eur=total_eur,
+        max_position_eur=position_eur,
     )
     session = LiveTradingSession(
         client=client, strategy=_FixedSignalStrategy(signal), agent=RuleBasedAgent(),
@@ -109,6 +110,20 @@ def test_sell_proposed_when_holding_and_signal_gone(tmp_path):
     proposal = session.propose()
     assert proposal.decision.action == "sell"
     assert proposal.order is not None and proposal.order.side == "sell"
+
+
+def test_position_cap_blocks_buy_when_already_holding_enough(tmp_path):
+    """Plafond de position durable, lu sur Kraken : si on détient déjà assez
+    de crypto, aucun nouvel achat, même si le journal d'audit est vide (donc
+    même après un redémarrage qui aurait perdu le journal)."""
+    # 0.05 XXBT au prix synthétique (~29000 €) vaut bien plus que le plafond
+    # de position de 20 €, donc un achat doit être refusé.
+    session, transport, _ = _build(
+        tmp_path, mode=LiveMode.LIVE_REAL, signal=1, holding=True, position_eur=20.0
+    )
+    proposal = session.propose()
+    assert proposal.order is None
+    assert "position" in (proposal.block_reason or "").lower()
 
 
 def test_exchange_error_is_handled_not_raised(tmp_path):

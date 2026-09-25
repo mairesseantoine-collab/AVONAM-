@@ -96,14 +96,32 @@ class LiveTradingSession:
         held_volume = self._held_base_volume()
         holding = held_volume > _DUST
 
-        # Plafond cumulé : bloque tout nouvel achat si le total autorisé est atteint.
+        # Deux plafonds gardent un achat :
+        #  1. Plafond cumulé, lu dans le journal d'audit (peut se réinitialiser
+        #     si le stockage est éphémère, ex. Render sans disque persistant).
+        #  2. Plafond de position DÉTENUE, lu en direct sur Kraken via le solde :
+        #     durable, survit à tout redémarrage, ne peut pas être contourné par
+        #     une perte du journal. C'est le vrai garde-fou de fond.
         already = self._total_executed_eur()
-        remaining = self.config.max_total_notional_eur - already
-        risk_ok = remaining >= self.config.max_notional_per_order_eur
-        risk_reason = None if risk_ok else (
-            f"plafond cumulé atteint ({already:.2f} € exécutés sur "
-            f"{self.config.max_total_notional_eur:.2f} € autorisés)"
-        )
+        cumulative_ok = (self.config.max_total_notional_eur - already) >= self.config.max_notional_per_order_eur
+
+        position_value = held_volume * last_price
+        would_be_position = position_value + self.config.max_notional_per_order_eur
+        position_ok = would_be_position <= self.config.max_position_eur
+
+        risk_ok = cumulative_ok and position_ok
+        if not cumulative_ok:
+            risk_reason = (
+                f"plafond cumulé atteint ({already:.2f} € exécutés sur "
+                f"{self.config.max_total_notional_eur:.2f} € autorisés)"
+            )
+        elif not position_ok:
+            risk_reason = (
+                f"plafond de position atteint (détenu ~{position_value:.2f} €, "
+                f"max {self.config.max_position_eur:.2f} €)"
+            )
+        else:
+            risk_reason = None
 
         decision = self.agent.decide({
             "signal": signal,
@@ -200,6 +218,14 @@ class LiveTradingSession:
                 self.audit_log.log_event("live_order_refused", {
                     "reason": f"plafond cumulé dépassé ({already:.2f} + {proposal.estimated_notional_eur:.2f} "
                               f"> {self.config.max_total_notional_eur:.2f})",
+                })
+                return None
+            # Plafond de position durable, relu sur Kraken juste avant l'envoi.
+            position_value = self._held_base_volume() * proposal.last_price
+            if position_value + proposal.estimated_notional_eur > self.config.max_position_eur:
+                self.audit_log.log_event("live_order_refused", {
+                    "reason": f"plafond de position dépassé (détenu ~{position_value:.2f} + "
+                              f"{proposal.estimated_notional_eur:.2f} > {self.config.max_position_eur:.2f})",
                 })
                 return None
 

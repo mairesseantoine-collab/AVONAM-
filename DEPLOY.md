@@ -114,10 +114,22 @@ Dans Render : votre service → **Settings** → section **Environment** →
 | `KRAKEN_API_SECRET` | Secret API Kraken | — |
 | `AVONAM_MODE` | `shadow` (défaut, aucun ordre réel) ou `live_real` | `shadow` |
 | `AVONAM_MAX_ORDER_EUR` | Plafond par ordre (optionnel) | `10` |
-| `AVONAM_MAX_TOTAL_EUR` | Plafond cumulé de sécurité (optionnel) | `50` |
+| `AVONAM_MAX_TOTAL_EUR` | Plafond cumulé, via journal (optionnel) | `50` |
+| `AVONAM_MAX_POSITION_EUR` | Plafond de position détenue, lu sur Kraken (optionnel) | `50` |
 
 Ces variables Render sont **privées** (contrairement aux variables de
 l'environnement Claude Code), donc c'est un endroit acceptable pour la clé.
+
+> ⚠️ **Deux plafonds, deux natures.** `AVONAM_MAX_TOTAL_EUR` est calculé
+> depuis le journal d'audit, écrit sur le disque. Sur Render, le disque
+> d'un service est **éphémère** : il est remis à zéro à chaque
+> redéploiement, donc ce plafond cumulé se réinitialise. `AVONAM_MAX_POSITION_EUR`
+> est au contraire lu **en direct sur Kraken** (votre solde réel), il ne
+> dépend d'aucun fichier et survit à tout redémarrage : c'est le vrai
+> garde-fou de fond, il empêche de détenir plus que ce montant de crypto à
+> la fois. Pour rendre aussi le plafond cumulé durable, ajoutez un
+> **Persistent Disk** Render monté sur `output/` (option payante) ; sinon,
+> fiez-vous surtout au plafond de position.
 
 Ordre recommandé :
 1. Définissez d'abord seulement `AVONAM_DASHBOARD_PASSWORD` (sans les clés

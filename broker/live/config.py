@@ -25,12 +25,13 @@ class LiveTradingConfig:
     pair: str = "XBTEUR"
     max_notional_per_order_eur: float = 10.0
     max_notional_per_day_eur: float = 30.0
-    max_total_notional_eur: float = 50.0   # plafond cumulé (somme des achats déjà exécutés)
+    max_total_notional_eur: float = 50.0   # plafond cumulé (somme des achats, via journal d'audit)
+    max_position_eur: float = 50.0         # plafond de position DÉTENUE, lu en direct sur Kraken (durable)
     max_consecutive_failures: int = 3
     max_trades_per_day: int = 3            # garde-fou spécifique au mode automatique
 
     def __post_init__(self) -> None:
-        for name in ("max_notional_per_order_eur", "max_notional_per_day_eur", "max_total_notional_eur"):
+        for name in ("max_notional_per_order_eur", "max_notional_per_day_eur", "max_total_notional_eur", "max_position_eur"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} doit être strictement positif.")
         if self.max_notional_per_order_eur > self.max_total_notional_eur:
@@ -55,5 +56,6 @@ class LiveTradingConfig:
             max_notional_per_order_eur=_f("AVONAM_MAX_ORDER_EUR", 10.0),
             max_notional_per_day_eur=_f("AVONAM_MAX_DAY_EUR", 30.0),
             max_total_notional_eur=_f("AVONAM_MAX_TOTAL_EUR", 50.0),
+            max_position_eur=_f("AVONAM_MAX_POSITION_EUR", 50.0),
             max_trades_per_day=int(os.environ.get("AVONAM_MAX_TRADES_PER_DAY", 3)),
         )
