@@ -1,7 +1,5 @@
-"""Interface web minimale pour visualiser le moteur de trading dans un
-navigateur : formulaire de paramètres, backtest exécuté côté serveur,
-courbe d'équity et statistiques renvoyées en JSON et affichées côté client
-en JavaScript natif (pas de dépendance front-end à builder).
+"""Interface web du moteur de trading : tableau de bord pédagogique,
+auto-actualisé, avec une explication pour chaque donnée affichée.
 
 ⚠️ Ce serveur expose le moteur de trading (`avonam/`) et, en lecture seule,
 les données de marché PUBLIQUES de Kraken (`broker/kraken/market_data.py`,
@@ -14,9 +12,10 @@ réelles. Il n'expose en revanche JAMAIS :
     - les endpoints privés de `broker/kraken/` (solde, passage d'ordres,
       `LiveExecutionBridge`) : aucune clé API Kraken n'est lue par ce
       fichier, et aucun ordre, dry-run ou réel, ne peut être déclenché
-      depuis cette interface publique. Ne les ajoutez pas ici sans avoir
-      relu la section « Exécution réelle crypto » du README et sans avoir
-      d'abord mis en place une authentification.
+      depuis cette interface publique. « Automatiser » ici veut dire
+      auto-rafraîchir un tableau de bord en lecture seule, jamais
+      enchaîner des ordres réels tout seul — voir la section « Exécution
+      réelle crypto » du README avant d'envisager d'aller plus loin.
 
 Lancer en local :
     python -m uvicorn web.app:app --reload
@@ -60,7 +59,7 @@ def run_backtest(
     max_drawdown_pct: float = Query(20.0, gt=0),
 ) -> dict:
     if fast_period >= slow_period:
-        return {"error": "fast_period doit être strictement inférieur à slow_period"}
+        return {"error": "La SMA rapide doit être strictement plus courte que la SMA lente."}
 
     if source == "kraken":
         if pair not in KRAKEN_PAIRS:
@@ -88,15 +87,17 @@ def run_backtest(
     return {
         "source": source,
         "pair": pair if source == "kraken" else None,
+        "last_price": round(float(data["close"].iloc[-1]), 2),
+        "as_of": data.index[-1].isoformat(),
         "equity_curve": [
-            {"date": d.strftime("%Y-%m-%d"), "equity": round(v, 2)}
+            {"date": d.strftime("%Y-%m-%d %H:%M"), "equity": round(v, 2)}
             for d, v in result.equity_curve.items()
         ],
         "metrics": {k: round(v, 3) if isinstance(v, float) else v for k, v in result.metrics.items()},
         "trades": [
             {
-                "entry_date": t.entry_date.strftime("%Y-%m-%d"),
-                "exit_date": t.exit_date.strftime("%Y-%m-%d") if t.exit_date else None,
+                "entry_date": t.entry_date.strftime("%Y-%m-%d %H:%M"),
+                "exit_date": t.exit_date.strftime("%Y-%m-%d %H:%M") if t.exit_date else None,
                 "side": t.side,
                 "entry_price": round(t.entry_price, 2),
                 "exit_price": round(t.exit_price, 2) if t.exit_price else None,
@@ -105,7 +106,7 @@ def run_backtest(
             }
             for t in result.trades
         ],
-        "halted_at": result.halted_at.strftime("%Y-%m-%d") if result.halted_at else None,
+        "halted_at": result.halted_at.strftime("%Y-%m-%d %H:%M") if result.halted_at else None,
     }
 
 
@@ -120,126 +121,335 @@ _PAGE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AVONAM — Tableau de bord</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0b0f14; --panel:#121822; --text:#e6edf3; --muted:#8b98a5; --accent:#4c9eff; --pos:#3fb950; --neg:#f85149; --border:#232b36; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,Segoe UI,Roboto,sans-serif; }
-  header { padding:20px 24px; border-bottom:1px solid var(--border); }
-  header h1 { margin:0; font-size:20px; }
-  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
-  main { max-width:1100px; margin:0 auto; padding:24px; display:grid; gap:20px; }
-  .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px; }
-  form { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:14px; align-items:end; }
-  label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
-  input, select { width:100%; padding:8px; background:#0d1420; border:1px solid var(--border); border-radius:6px; color:var(--text); }
-  .source-note { font-size:12px; color:var(--muted); margin:10px 0 0; }
-  button { grid-column: -2 / -1; padding:10px 16px; background:var(--accent); border:none; border-radius:6px; color:#fff; font-weight:600; cursor:pointer; }
-  button:hover { opacity:0.9; }
-  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
-  .stat { background:#0d1420; border:1px solid var(--border); border-radius:8px; padding:12px; }
-  .stat .label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-  .stat .value { font-size:20px; font-weight:700; margin-top:4px; }
-  .pos { color:var(--pos); } .neg { color:var(--neg); }
-  canvas { width:100%; height:280px; }
-  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
-  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); }
-  th { color:var(--muted); font-weight:500; }
-  .muted { color:var(--muted); font-size:12px; margin-top:8px; }
+  :root {
+    color-scheme: dark;
+    --bg:#0e1117; --panel:#161b24; --panel-2:#0d1420; --border:#252c38;
+    --text:#e9edf4; --muted:#8b96a8; --accent:#2a78d6; --accent-2:#3987e5;
+    --good:#17c317; --critical:#e66767; --good-bg:rgba(23,195,23,.12); --critical-bg:rgba(230,103,103,.12);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
+  code, .mono, output, .value, td { font-family:"IBM Plex Mono",monospace; }
+  header { padding:22px 24px; border-bottom:1px solid var(--border); }
+  header h1 { margin:0; font-size:21px; letter-spacing:-.01em; }
+  header p { margin:6px 0 0; color:var(--muted); font-size:13px; max-width:70ch; line-height:1.5; }
+  main { max-width:1080px; margin:0 auto; padding:22px 16px 60px; display:grid; gap:16px; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px; }
+
+  /* -- sélecteur de source (pills) -- */
+  .pills { display:flex; gap:8px; flex-wrap:wrap; }
+  .pill { padding:8px 14px; border-radius:999px; border:1px solid var(--border); background:var(--panel-2); color:var(--muted); font-size:13px; cursor:pointer; font-weight:500; }
+  .pill.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .live-row { display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); }
+  .live-dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+  .live-dot.on { background:var(--good); box-shadow:0 0 0 0 var(--good); animation:pulse 1.8s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(23,195,23,.5);} 70%{box-shadow:0 0 0 6px rgba(23,195,23,0);} 100%{box-shadow:0 0 0 0 rgba(23,195,23,0);} }
+  .toggle { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+  .toggle input { accent-color:var(--accent); }
+  .refresh-btn { margin-left:auto; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:var(--panel-2); color:var(--text); font-size:12px; cursor:pointer; }
+  .refresh-btn:hover { border-color:var(--accent); }
+
+  /* -- réglages avancés -- */
+  details.panel summary { cursor:pointer; font-weight:600; font-size:14px; list-style:none; }
+  details.panel summary::-webkit-details-marker { display:none; }
+  details.panel summary::before { content:"▸ "; color:var(--muted); }
+  details.panel[open] summary::before { content:"▾ "; }
+  .sliders { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:18px; margin-top:16px; }
+  .slider-row label { display:flex; align-items:center; font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .slider-line { display:flex; align-items:center; gap:10px; }
+  input[type=range] { flex:1; accent-color:var(--accent); }
+  .slider-line output { font-size:13px; min-width:48px; text-align:right; }
+  .capital-row { margin-top:16px; max-width:220px; }
+  .capital-row label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .capital-row input { width:100%; padding:8px; background:var(--panel-2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:"IBM Plex Mono",monospace; }
+
+  /* -- info tooltip -- */
+  .info { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; background:var(--border); color:var(--muted); font-size:10px; cursor:help; margin-left:5px; position:relative; flex-shrink:0; }
+  .info::after { content:attr(data-tip); position:absolute; bottom:135%; left:50%; transform:translateX(-50%); background:#0a0e15; border:1px solid var(--border); padding:9px 11px; border-radius:8px; font-size:11.5px; line-height:1.5; color:var(--text); width:220px; white-space:normal; z-index:20; opacity:0; pointer-events:none; transition:opacity .1s; font-weight:400; }
+  .info:hover::after, .info:focus::after { opacity:1; }
+
+  /* -- erreur -- */
+  .error-banner { display:none; background:var(--critical-bg); border:1px solid var(--critical); color:var(--critical); padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; }
+  .error-banner.show { display:block; }
+
+  .source-note { font-size:12.5px; color:var(--muted); margin:0 0 14px; }
+  .price-badge { color:var(--text); font-weight:600; }
+
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .stat { background:var(--panel-2); border:1px solid var(--border); border-radius:9px; padding:12px; }
+  .stat .label { display:flex; align-items:center; font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .stat .value { font-size:19px; font-weight:600; margin-top:5px; }
+  .good { color:var(--good); } .critical { color:var(--critical); }
+
+  .chart-box { position:relative; }
+  svg { width:100%; height:300px; display:block; overflow:visible; }
+  svg text { fill:var(--muted); font-size:11px; font-family:"IBM Plex Mono",monospace; }
+  .gridline { stroke:var(--border); stroke-width:1; }
+  .baseline { stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; opacity:.6; }
+  .equity-line { fill:none; stroke:var(--accent-2); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+  .equity-area { fill:rgba(57,135,229,.10); stroke:none; }
+  .crosshair { stroke:var(--muted); stroke-width:1; opacity:0; pointer-events:none; }
+  .chart-tooltip { position:absolute; pointer-events:none; background:var(--panel-2); border:1px solid var(--border); border-radius:8px; padding:7px 10px; font-size:12px; opacity:0; transform:translate(-50%,-115%); transition:opacity .1s; white-space:nowrap; }
+  .chart-tooltip .t-date { color:var(--muted); font-size:10.5px; }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.03em; }
+  .badge { font-family:"IBM Plex Sans",sans-serif; font-size:10.5px; padding:2px 8px; border-radius:999px; }
+  .badge.long { background:rgba(57,135,229,.15); color:#7ab4f2; }
+  .badge.short { background:rgba(233,140,20,.15); color:#e9a64f; }
+  .badge.reason-stop_loss { background:var(--critical-bg); color:var(--critical); }
+  .badge.reason-take_profit { background:var(--good-bg); color:var(--good); }
+  .badge.reason-signal { background:var(--border); color:var(--muted); }
+
+  details.help summary { cursor:pointer; font-weight:600; font-size:14px; list-style:none; }
+  details.help summary::-webkit-details-marker { display:none; }
+  details.help summary::before { content:"▸ "; color:var(--muted); }
+  details.help[open] summary::before { content:"▾ "; }
+  details.help .help-body { margin-top:14px; display:grid; gap:10px; font-size:13px; color:var(--muted); line-height:1.6; }
+  details.help .help-body b { color:var(--text); }
+  .muted-note { font-size:12px; color:var(--muted); margin-top:10px; }
 </style>
 </head>
 <body>
 <header>
   <h1>AVONAM — Tableau de bord (simulation)</h1>
-  <p>Backtest / paper trading en direct, sur données d'exemple ou sur données Kraken réelles. Aucun ordre réel, aucune clé API, aucune connexion bancaire.</p>
+  <p>Backtest et paper trading en direct, sur données d'exemple ou sur données Kraken réelles, avec explication de chaque chiffre affiché. Aucun ordre réel, aucune clé API, aucune connexion bancaire — voir « Comprendre ce tableau de bord » en bas de page.</p>
 </header>
 <main>
-  <div class="panel">
-    <form id="form">
-      <div>
-        <label>Source de données</label>
-        <select name="source_pair">
-          <option value="demo">Données d'exemple (statique)</option>
-          <option value="kraken:XBTEUR">Kraken — BTC/EUR (temps réel)</option>
-          <option value="kraken:ETHEUR">Kraken — ETH/EUR (temps réel)</option>
-        </select>
-      </div>
-      <div><label>SMA rapide</label><input type="number" name="fast_period" value="20"></div>
-      <div><label>SMA lente</label><input type="number" name="slow_period" value="50"></div>
-      <div><label>Capital initial (€)</label><input type="number" name="initial_capital" value="10000"></div>
-      <div><label>Risque / trade (%)</label><input type="number" step="0.1" name="risk_per_trade_pct" value="1.0"></div>
-      <div><label>Stop-loss (%)</label><input type="number" step="0.1" name="stop_loss_pct" value="2.0"></div>
-      <div><label>Take-profit (%)</label><input type="number" step="0.1" name="take_profit_pct" value="4.0"></div>
-      <div><label>Drawdown max (%)</label><input type="number" step="0.1" name="max_drawdown_pct" value="20.0"></div>
-      <button type="submit">Lancer le backtest</button>
-    </form>
-  </div>
 
   <div class="panel">
-    <p class="source-note" id="source-note"></p>
+    <div class="pills" id="source-pills">
+      <button type="button" class="pill active" data-source="demo" data-pair="">Données d'exemple</button>
+      <button type="button" class="pill" data-source="kraken" data-pair="XBTEUR">Kraken · BTC/EUR</button>
+      <button type="button" class="pill" data-source="kraken" data-pair="ETHEUR">Kraken · ETH/EUR</button>
+    </div>
+    <div class="live-row" id="live-row" style="display:none;">
+      <span class="live-dot" id="live-dot"></span>
+      <span id="freshness">—</span>
+      <label class="toggle"><input type="checkbox" id="auto-refresh-toggle" checked> Actualisation auto. (5 min)</label>
+      <button type="button" class="refresh-btn" id="refresh-now">Actualiser maintenant</button>
+    </div>
+  </div>
+
+  <details class="panel">
+    <summary>Réglages avancés (stratégie et gestion du risque)</summary>
+    <div class="sliders">
+      <div class="slider-row">
+        <label>SMA rapide <span class="info" tabindex="0" data-tip="Moyenne mobile courte : réagit vite aux variations de prix. Plus elle est courte, plus la stratégie change d'avis souvent.">?</span></label>
+        <div class="slider-line"><input type="range" id="fast_period" min="2" max="50" step="1" value="20"><output>20</output></div>
+      </div>
+      <div class="slider-row">
+        <label>SMA lente <span class="info" tabindex="0" data-tip="Moyenne mobile longue : donne la tendance de fond. La stratégie achète quand la rapide passe au-dessus de la lente.">?</span></label>
+        <div class="slider-line"><input type="range" id="slow_period" min="5" max="200" step="1" value="50"><output>50</output></div>
+      </div>
+      <div class="slider-row">
+        <label>Risque par trade <span class="info" tabindex="0" data-tip="Pourcentage du capital qu'on accepte de perdre si le stop-loss est touché sur UN SEUL trade. 1% est une valeur prudente classique.">?</span></label>
+        <div class="slider-line"><input type="range" id="risk_per_trade_pct" min="0.1" max="5" step="0.1" value="1.0"><output>1.0%</output></div>
+      </div>
+      <div class="slider-row">
+        <label>Stop-loss <span class="info" tabindex="0" data-tip="Distance sous le prix d'entrée à laquelle la position se ferme automatiquement pour limiter la perte.">?</span></label>
+        <div class="slider-line"><input type="range" id="stop_loss_pct" min="0.5" max="10" step="0.1" value="2.0"><output>2.0%</output></div>
+      </div>
+      <div class="slider-row">
+        <label>Take-profit <span class="info" tabindex="0" data-tip="Distance au-dessus du prix d'entrée à laquelle la position se ferme automatiquement pour sécuriser le gain.">?</span></label>
+        <div class="slider-line"><input type="range" id="take_profit_pct" min="0.5" max="20" step="0.1" value="4.0"><output>4.0%</output></div>
+      </div>
+      <div class="slider-row">
+        <label>Drawdown max <span class="info" tabindex="0" data-tip="Si le capital chute de plus de ce pourcentage depuis son plus haut, la stratégie arrête d'ouvrir de nouvelles positions (kill switch).">?</span></label>
+        <div class="slider-line"><input type="range" id="max_drawdown_pct" min="5" max="50" step="1" value="20"><output>20%</output></div>
+      </div>
+    </div>
+    <div class="capital-row">
+      <label>Capital initial (€)</label>
+      <input type="number" id="initial_capital" value="10000" min="100" step="100">
+    </div>
+  </details>
+
+  <div class="panel">
+    <div class="error-banner" id="error-banner"></div>
+    <p class="source-note" id="source-note">Chargement…</p>
     <div class="stats" id="stats"></div>
   </div>
 
   <div class="panel">
-    <canvas id="chart"></canvas>
+    <div class="chart-box">
+      <svg id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
+      <div class="chart-tooltip" id="chart-tooltip"><div class="t-date" id="tt-date"></div><div id="tt-value"></div></div>
+    </div>
   </div>
 
   <div class="panel">
     <table id="trades"><thead><tr>
-      <th>Entrée</th><th>Sortie</th><th>Sens</th><th>Prix entrée</th><th>Prix sortie</th><th>Raison</th><th>P&L</th>
+      <th>Entrée</th><th>Sortie</th><th>Sens</th><th>Prix entrée</th><th>Prix sortie</th><th>Raison</th><th>P&amp;L</th>
     </tr></thead><tbody></tbody></table>
-    <p class="muted">Backtest pédagogique : aucune garantie de performance future. Voir le README pour les limites (overfitting, biais du survivant, etc.).</p>
   </div>
+
+  <details class="panel help">
+    <summary>Comprendre ce tableau de bord</summary>
+    <div class="help-body">
+      <div><b>Backtest vs paper trading.</b> Sur « Données d'exemple », le moteur rejoue un historique fixe d'un coup (backtest). Sur « Kraken », il utilise les dernières bougies réelles du marché — c'est du paper trading sur données réelles : aucun argent n'est engagé, mais les conditions de marché sont actuelles.</div>
+      <div><b>Rendement total</b> — variation du capital sur toute la période, en %. Positif = gain simulé, négatif = perte simulée.</div>
+      <div><b>Drawdown maximum</b> — la pire chute du capital par rapport à son plus haut atteint. Souvent le chiffre le plus parlant pour juger si une stratégie serait supportable psychologiquement.</div>
+      <div><b>Ratio de Sharpe</b> — rendement ajusté du risque. Au-dessus de 1 est correct, au-dessus de 2 est très bon — mais peu fiable si le nombre de trades est faible.</div>
+      <div><b>Win rate</b> — pourcentage de trades gagnants. Un chiffre bas peut rester rentable si les gains sont en moyenne plus gros que les pertes (voir profit factor).</div>
+      <div><b>Profit factor</b> — somme des gains ÷ somme des pertes. Supérieur à 1 = stratégie gagnante sur cette période, inférieur à 1 = perdante.</div>
+      <div><b>Raison de sortie</b> — <span class="badge reason-signal">signal</span> la stratégie a changé d'avis, <span class="badge reason-stop_loss">stop_loss</span> perte limitée automatiquement, <span class="badge reason-take_profit">take_profit</span> gain sécurisé automatiquement.</div>
+      <div><b>Limites à garder en tête</b> — sur-optimisation (ne réglez pas les paramètres juste pour maximiser ce backtest précis), biais du survivant, et l'exécution réelle peut toujours être légèrement pire (slippage, frais). Voir le README du projet pour le détail.</div>
+    </div>
+  </details>
+
 </main>
 
 <script>
-const form = document.getElementById('form');
-const statsEl = document.getElementById('stats');
-const sourceNoteEl = document.getElementById('source-note');
-const canvas = document.getElementById('chart');
-const tbody = document.querySelector('#trades tbody');
+const state = { source: 'demo', pair: '' };
+let debounceTimer = null;
+let autoRefreshTimer = null;
+let freshnessTimer = null;
+let lastFetchAt = null;
 
-const SOURCE_LABELS = {
-  demo: "Données d'exemple synthétiques (statiques).",
-  'kraken:XBTEUR': 'Kraken — BTC/EUR, bougies horaires en temps réel (paper trading, aucune clé API, aucun ordre).',
-  'kraken:ETHEUR': 'Kraken — ETH/EUR, bougies horaires en temps réel (paper trading, aucune clé API, aucun ordre).',
-};
+const pillsEl = document.getElementById('source-pills');
+const liveRowEl = document.getElementById('live-row');
+const liveDotEl = document.getElementById('live-dot');
+const freshnessEl = document.getElementById('freshness');
+const autoToggleEl = document.getElementById('auto-refresh-toggle');
+const refreshNowBtn = document.getElementById('refresh-now');
+const errorBannerEl = document.getElementById('error-banner');
+const sourceNoteEl = document.getElementById('source-note');
+const statsEl = document.getElementById('stats');
+const svg = document.getElementById('chart');
+const tooltipEl = document.getElementById('chart-tooltip');
+const ttDate = document.getElementById('tt-date');
+const ttValue = document.getElementById('tt-value');
+const tbody = document.querySelector('#trades tbody');
+const capitalInput = document.getElementById('initial_capital');
+
+const SLIDER_IDS = ['fast_period','slow_period','risk_per_trade_pct','stop_loss_pct','take_profit_pct','max_drawdown_pct'];
+const SLIDER_SUFFIX = { fast_period:'', slow_period:'', risk_per_trade_pct:'%', stop_loss_pct:'%', take_profit_pct:'%', max_drawdown_pct:'%' };
 
 function fmt(n) { return typeof n === 'number' ? n.toLocaleString('fr-BE', {maximumFractionDigits: 2}) : n; }
 
-function drawChart(points) {
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = canvas.clientHeight;
-  canvas.width = w * dpr; canvas.height = h * dpr;
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, w, h);
+// -- réglages : sliders avec lecture live + auto-run debounced --
+SLIDER_IDS.forEach(id => {
+  const input = document.getElementById(id);
+  const output = input.nextElementSibling;
+  input.addEventListener('input', () => {
+    output.textContent = (id.includes('period') ? input.value : parseFloat(input.value).toFixed(1)) + SLIDER_SUFFIX[id];
+    scheduleRun();
+  });
+});
+capitalInput.addEventListener('input', scheduleRun);
 
+function scheduleRun() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(runBacktest, 400);
+}
+
+// -- sélecteur de source (pills) --
+pillsEl.addEventListener('click', e => {
+  const btn = e.target.closest('.pill');
+  if (!btn) return;
+  [...pillsEl.children].forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  state.source = btn.dataset.source;
+  state.pair = btn.dataset.pair;
+  liveRowEl.style.display = state.source === 'kraken' ? 'flex' : 'none';
+  liveDotEl.classList.toggle('on', state.source === 'kraken');
+  setupAutoRefresh();
+  runBacktest();
+});
+
+autoToggleEl.addEventListener('change', setupAutoRefresh);
+refreshNowBtn.addEventListener('click', runBacktest);
+
+function setupAutoRefresh() {
+  clearInterval(autoRefreshTimer);
+  if (state.source === 'kraken' && autoToggleEl.checked) {
+    autoRefreshTimer = setInterval(runBacktest, 5 * 60 * 1000);
+  }
+}
+
+function updateFreshness() {
+  if (!lastFetchAt) { freshnessEl.textContent = '—'; return; }
+  const seconds = Math.round((Date.now() - lastFetchAt) / 1000);
+  const label = seconds < 60 ? `il y a ${seconds}s` : `il y a ${Math.round(seconds / 60)} min`;
+  freshnessEl.textContent = `Dernière mise à jour : ${label}`;
+}
+freshnessTimer = setInterval(updateFreshness, 1000);
+
+// -- graphique (SVG avec crosshair + info-bulle) --
+function renderChart(points) {
+  svg.innerHTML = '';
+  const W = 1000, H = 300, padL = 60, padR = 16, padT = 16, padB = 26;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
   const values = points.map(p => p.equity);
-  const min = Math.min(...values), max = Math.max(...values);
-  const pad = 30;
-  const x = i => pad + (i / (points.length - 1)) * (w - pad * 2);
-  const y = v => h - pad - ((v - min) / (max - min || 1)) * (h - pad * 2);
+  const minV = Math.min(...values), maxV = Math.max(...values);
+  const span = (maxV - minV) || 1;
+  const initial = points[0].equity;
 
-  ctx.strokeStyle = '#4c9eff'; ctx.lineWidth = 2; ctx.beginPath();
-  points.forEach((p, i) => { const px = x(i), py = y(p.equity); i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py); });
-  ctx.stroke();
+  const xAt = i => padL + (i / (points.length - 1)) * plotW;
+  const yAt = v => padT + plotH - ((v - minV) / span) * plotH;
+  const ns = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs) => { const e = document.createElementNS(ns, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
 
-  ctx.fillStyle = '#8b98a5'; ctx.font = '11px sans-serif';
-  ctx.fillText(fmt(max), 4, y(max) + 4);
-  ctx.fillText(fmt(min), 4, y(min) + 4);
-  ctx.fillText(points[0].date, pad, h - 8);
-  ctx.fillText(points[points.length - 1].date, w - 90, h - 8);
+  for (let s = 0; s <= 4; s++) {
+    const v = minV + (span * s / 4);
+    const y = yAt(v);
+    svg.appendChild(el('line', { x1:padL, x2:W-padR, y1:y, y2:y, class:'gridline' }));
+    const t = el('text', { x:6, y:y+4 }); t.textContent = Math.round(v).toLocaleString('fr-BE'); svg.appendChild(t);
+  }
+  const yBase = yAt(initial);
+  svg.appendChild(el('line', { x1:padL, x2:W-padR, y1:yBase, y2:yBase, class:'baseline' }));
+
+  let dLine = `M ${xAt(0)} ${yAt(points[0].equity)} `, dArea = dLine;
+  points.forEach((p, i) => { if (i===0) return; dLine += `L ${xAt(i)} ${yAt(p.equity)} `; dArea += `L ${xAt(i)} ${yAt(p.equity)} `; });
+  dArea += `L ${xAt(points.length-1)} ${yBase} L ${xAt(0)} ${yBase} Z`;
+  svg.appendChild(el('path', { d:dArea, class:'equity-area' }));
+  svg.appendChild(el('path', { d:dLine, class:'equity-line' }));
+
+  const lastI = points.length - 1, lastX = xAt(lastI), lastY = yAt(points[lastI].equity);
+  svg.appendChild(el('circle', { cx:lastX, cy:lastY, r:4, fill:'var(--accent-2)', stroke:'var(--panel)', 'stroke-width':2 }));
+
+  svg.appendChild(el('text', { x:padL, y:H-6 })).textContent = points[0].date;
+  svg.appendChild(el('text', { x:W-padR, y:H-6, 'text-anchor':'end' })).textContent = points[lastI].date;
+
+  const crosshair = el('line', { x1:0, x2:0, y1:padT, y2:H-padB, class:'crosshair' });
+  svg.appendChild(crosshair);
+  const hit = el('rect', { x:padL, y:padT, width:plotW, height:plotH, fill:'transparent' });
+  svg.appendChild(hit);
+
+  function show(clientX) {
+    const rect = svg.getBoundingClientRect();
+    const xSvg = ((clientX - rect.left) / rect.width) * W;
+    const ratio = Math.min(Math.max((xSvg - padL) / plotW, 0), 1);
+    const i = Math.round(ratio * (points.length - 1));
+    const p = points[i];
+    crosshair.setAttribute('x1', xAt(i)); crosshair.setAttribute('x2', xAt(i)); crosshair.style.opacity = 1;
+    ttDate.textContent = p.date;
+    ttValue.textContent = fmt(p.equity) + ' €';
+    ttValue.style.color = p.equity >= initial ? 'var(--good)' : 'var(--critical)';
+    const boxRect = svg.parentElement.getBoundingClientRect();
+    tooltipEl.style.left = (clientX - boxRect.left) + 'px';
+    tooltipEl.style.top = ((yAt(p.equity) / H) * boxRect.height) + 'px';
+    tooltipEl.style.opacity = 1;
+  }
+  hit.addEventListener('pointermove', e => show(e.clientX));
+  hit.addEventListener('pointerleave', () => { crosshair.style.opacity = 0; tooltipEl.style.opacity = 0; });
 }
 
 function renderStats(m) {
-  const cls = v => v >= 0 ? 'pos' : 'neg';
+  const cls = v => v >= 0 ? 'good' : 'critical';
   statsEl.innerHTML = `
-    <div class="stat"><div class="label">Rendement total</div><div class="value ${cls(m.total_return_pct)}">${fmt(m.total_return_pct)}%</div></div>
-    <div class="stat"><div class="label">Drawdown max</div><div class="value neg">${fmt(m.max_drawdown_pct)}%</div></div>
-    <div class="stat"><div class="label">Ratio de Sharpe</div><div class="value">${fmt(m.sharpe_ratio)}</div></div>
-    <div class="stat"><div class="label">Trades</div><div class="value">${m.num_trades}</div></div>
-    <div class="stat"><div class="label">Win rate</div><div class="value">${fmt(m.win_rate_pct)}%</div></div>
-    <div class="stat"><div class="label">Profit factor</div><div class="value">${fmt(m.profit_factor)}</div></div>
+    <div class="stat"><div class="label">Rendement total <span class="info" tabindex="0" data-tip="Variation du capital sur toute la période, en %. Positif = gain, négatif = perte.">?</span></div><div class="value ${cls(m.total_return_pct)}">${fmt(m.total_return_pct)}%</div></div>
+    <div class="stat"><div class="label">Drawdown max <span class="info" tabindex="0" data-tip="Pire chute du capital depuis son plus haut. Un chiffre élevé est difficile à supporter psychologiquement.">?</span></div><div class="value critical">${fmt(m.max_drawdown_pct)}%</div></div>
+    <div class="stat"><div class="label">Ratio de Sharpe <span class="info" tabindex="0" data-tip="Rendement ajusté du risque. >1 correct, >2 très bon — peu fiable sur peu de trades.">?</span></div><div class="value">${fmt(m.sharpe_ratio)}</div></div>
+    <div class="stat"><div class="label">Trades <span class="info" tabindex="0" data-tip="Nombre total d'allers-retours (entrée puis sortie) sur la période.">?</span></div><div class="value">${m.num_trades}</div></div>
+    <div class="stat"><div class="label">Win rate <span class="info" tabindex="0" data-tip="Pourcentage de trades gagnants. Peut être bas et quand même rentable, voir profit factor.">?</span></div><div class="value">${fmt(m.win_rate_pct)}%</div></div>
+    <div class="stat"><div class="label">Profit factor <span class="info" tabindex="0" data-tip="Somme des gains ÷ somme des pertes. >1 = rentable sur cette période.">?</span></div><div class="value">${fmt(m.profit_factor)}</div></div>
   `;
 }
 
@@ -247,36 +457,42 @@ function renderTrades(trades) {
   tbody.innerHTML = trades.slice(-25).reverse().map(t => `
     <tr>
       <td>${t.entry_date}</td><td>${t.exit_date ?? '—'}</td>
-      <td>${t.side === 1 ? 'Long' : 'Short'}</td>
+      <td><span class="badge ${t.side === 1 ? 'long' : 'short'}">${t.side === 1 ? 'Long' : 'Short'}</span></td>
       <td>${fmt(t.entry_price)}</td><td>${t.exit_price != null ? fmt(t.exit_price) : '—'}</td>
-      <td>${t.exit_reason ?? '—'}</td>
-      <td class="${t.pnl >= 0 ? 'pos' : 'neg'}">${t.pnl != null ? fmt(t.pnl) : '—'}</td>
-    </tr>`).join('');
+      <td>${t.exit_reason ? `<span class="badge reason-${t.exit_reason}">${t.exit_reason}</span>` : '—'}</td>
+      <td class="${t.pnl >= 0 ? 'good' : 'critical'}">${t.pnl != null ? fmt(t.pnl) : '—'}</td>
+    </tr>`).join('') || '<tr><td colspan="7" style="color:var(--muted)">Aucun trade sur cette période.</td></tr>';
 }
 
 async function runBacktest() {
-  const formData = new FormData(form);
-  const sourcePair = formData.get('source_pair');
-  const [source, pair] = sourcePair.split(':');
-  formData.delete('source_pair');
+  const params = new URLSearchParams({ source: state.source, pair: state.pair, initial_capital: capitalInput.value });
+  SLIDER_IDS.forEach(id => params.set(id, document.getElementById(id).value));
 
-  const params = new URLSearchParams(formData);
-  params.set('source', source);
-  if (pair) params.set('pair', pair);
-
-  sourceNoteEl.textContent = 'Chargement...';
+  errorBannerEl.classList.remove('show');
   const resp = await fetch('/api/backtest?' + params.toString());
   const data = await resp.json();
-  if (data.error) { sourceNoteEl.textContent = ''; alert(data.error); return; }
 
-  sourceNoteEl.textContent = SOURCE_LABELS[sourcePair] ?? '';
-  drawChart(data.equity_curve);
+  if (data.error) {
+    errorBannerEl.textContent = data.error;
+    errorBannerEl.classList.add('show');
+    return;
+  }
+
+  lastFetchAt = Date.now();
+  updateFreshness();
+
+  if (data.source === 'kraken') {
+    sourceNoteEl.innerHTML = `Kraken — ${data.pair} · dernier prix <span class="price-badge">${fmt(data.last_price)} €</span> · bougies horaires, paper trading, aucune clé API, aucun ordre.`;
+  } else {
+    sourceNoteEl.textContent = "Données d'exemple synthétiques (statiques, générées pour la démo).";
+  }
+
+  renderChart(data.equity_curve);
   renderStats(data.metrics);
   renderTrades(data.trades);
 }
 
-form.addEventListener('submit', e => { e.preventDefault(); runBacktest(); });
-window.addEventListener('resize', () => runBacktest());
+setupAutoRefresh();
 runBacktest();
 </script>
 </body>
