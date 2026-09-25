@@ -3,12 +3,20 @@ navigateur : formulaire de paramètres, backtest exécuté côté serveur,
 courbe d'équity et statistiques renvoyées en JSON et affichées côté client
 en JavaScript natif (pas de dépendance front-end à builder).
 
-⚠️ Ce serveur n'expose QUE le moteur de trading (`avonam/`) — jamais le
-module bancaire (`bank/`). Le module bancaire déclenche des consentements
-PSD2 réels et ne doit jamais être accessible depuis un serveur public sans
-authentification utilisateur, HTTPS, et le statut TPP requis (voir le
-README, section « Intégration bancaire PSD2 »). Ne l'ajoutez pas ici sans
-avoir relu cette section.
+⚠️ Ce serveur expose le moteur de trading (`avonam/`) et, en lecture seule,
+les données de marché PUBLIQUES de Kraken (`broker/kraken/market_data.py`,
+aucune clé API, aucun ordre) pour faire du paper trading sur des données
+réelles. Il n'expose en revanche JAMAIS :
+    - le module bancaire (`bank/`) : déclenche des consentements PSD2
+      réels, ne doit jamais être accessible depuis un serveur public sans
+      authentification utilisateur, HTTPS, et le statut TPP requis (voir
+      le README, section « Intégration bancaire PSD2 ») ;
+    - les endpoints privés de `broker/kraken/` (solde, passage d'ordres,
+      `LiveExecutionBridge`) : aucune clé API Kraken n'est lue par ce
+      fichier, et aucun ordre, dry-run ou réel, ne peut être déclenché
+      depuis cette interface publique. Ne les ajoutez pas ici sans avoir
+      relu la section « Exécution réelle crypto » du README et sans avoir
+      d'abord mis en place une authentification.
 
 Lancer en local :
     python -m uvicorn web.app:app --reload
@@ -27,14 +35,22 @@ from avonam.backtest.engine import BacktestEngine
 from avonam.data.loader import load_csv
 from avonam.risk.manager import RiskManager
 from avonam.strategy.sma_crossover import SMACrossoverStrategy
+from broker.kraken.market_data import fetch_ohlc_dataframe
 
 app = FastAPI(title="AVONAM — Tableau de bord de trading (simulation)")
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "sample" / "DEMO.csv"
 
+# Paires Kraken autorisées pour le paper trading sur données réelles.
+# Endpoint PUBLIC uniquement (aucune clé API, aucun ordre, aucun risque) —
+# voir broker/kraken/market_data.py et l'avertissement en tête de ce fichier.
+KRAKEN_PAIRS = {"XBTEUR", "ETHEUR"}
+
 
 @app.get("/api/backtest")
 def run_backtest(
+    source: str = Query("demo"),
+    pair: str = Query("XBTEUR"),
     fast_period: int = Query(20, ge=1),
     slow_period: int = Query(50, ge=2),
     initial_capital: float = Query(10_000, gt=0),
@@ -46,7 +62,18 @@ def run_backtest(
     if fast_period >= slow_period:
         return {"error": "fast_period doit être strictement inférieur à slow_period"}
 
-    data = load_csv(DATA_PATH)
+    if source == "kraken":
+        if pair not in KRAKEN_PAIRS:
+            return {"error": f"Paire non autorisée : {pair}"}
+        try:
+            # Endpoint public Kraken : aucune clé API, aucune écriture,
+            # uniquement des bougies OHLC en lecture seule.
+            data = fetch_ohlc_dataframe(pair, interval_minutes=60)
+        except Exception as exc:  # réseau Kraken indisponible, etc.
+            return {"error": f"Impossible de récupérer les données Kraken : {exc}"}
+    else:
+        data = load_csv(DATA_PATH)
+
     strategy = SMACrossoverStrategy(fast_period=fast_period, slow_period=slow_period)
     risk_manager = RiskManager(
         initial_capital=initial_capital,
@@ -59,6 +86,8 @@ def run_backtest(
     result = engine.run(data, strategy)
 
     return {
+        "source": source,
+        "pair": pair if source == "kraken" else None,
         "equity_curve": [
             {"date": d.strftime("%Y-%m-%d"), "equity": round(v, 2)}
             for d, v in result.equity_curve.items()
@@ -102,7 +131,8 @@ _PAGE = """<!DOCTYPE html>
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px; }
   form { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:14px; align-items:end; }
   label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
-  input { width:100%; padding:8px; background:#0d1420; border:1px solid var(--border); border-radius:6px; color:var(--text); }
+  input, select { width:100%; padding:8px; background:#0d1420; border:1px solid var(--border); border-radius:6px; color:var(--text); }
+  .source-note { font-size:12px; color:var(--muted); margin:10px 0 0; }
   button { grid-column: -2 / -1; padding:10px 16px; background:var(--accent); border:none; border-radius:6px; color:#fff; font-weight:600; cursor:pointer; }
   button:hover { opacity:0.9; }
   .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
@@ -120,11 +150,19 @@ _PAGE = """<!DOCTYPE html>
 <body>
 <header>
   <h1>AVONAM — Tableau de bord (simulation)</h1>
-  <p>Backtest en direct sur données d'exemple synthétiques. Aucun ordre réel, aucune connexion bancaire.</p>
+  <p>Backtest / paper trading en direct, sur données d'exemple ou sur données Kraken réelles. Aucun ordre réel, aucune clé API, aucune connexion bancaire.</p>
 </header>
 <main>
   <div class="panel">
     <form id="form">
+      <div>
+        <label>Source de données</label>
+        <select name="source_pair">
+          <option value="demo">Données d'exemple (statique)</option>
+          <option value="kraken:XBTEUR">Kraken — BTC/EUR (temps réel)</option>
+          <option value="kraken:ETHEUR">Kraken — ETH/EUR (temps réel)</option>
+        </select>
+      </div>
       <div><label>SMA rapide</label><input type="number" name="fast_period" value="20"></div>
       <div><label>SMA lente</label><input type="number" name="slow_period" value="50"></div>
       <div><label>Capital initial (€)</label><input type="number" name="initial_capital" value="10000"></div>
@@ -137,6 +175,7 @@ _PAGE = """<!DOCTYPE html>
   </div>
 
   <div class="panel">
+    <p class="source-note" id="source-note"></p>
     <div class="stats" id="stats"></div>
   </div>
 
@@ -155,8 +194,15 @@ _PAGE = """<!DOCTYPE html>
 <script>
 const form = document.getElementById('form');
 const statsEl = document.getElementById('stats');
+const sourceNoteEl = document.getElementById('source-note');
 const canvas = document.getElementById('chart');
 const tbody = document.querySelector('#trades tbody');
+
+const SOURCE_LABELS = {
+  demo: "Données d'exemple synthétiques (statiques).",
+  'kraken:XBTEUR': 'Kraken — BTC/EUR, bougies horaires en temps réel (paper trading, aucune clé API, aucun ordre).',
+  'kraken:ETHEUR': 'Kraken — ETH/EUR, bougies horaires en temps réel (paper trading, aucune clé API, aucun ordre).',
+};
 
 function fmt(n) { return typeof n === 'number' ? n.toLocaleString('fr-BE', {maximumFractionDigits: 2}) : n; }
 
@@ -209,10 +255,21 @@ function renderTrades(trades) {
 }
 
 async function runBacktest() {
-  const params = new URLSearchParams(new FormData(form));
+  const formData = new FormData(form);
+  const sourcePair = formData.get('source_pair');
+  const [source, pair] = sourcePair.split(':');
+  formData.delete('source_pair');
+
+  const params = new URLSearchParams(formData);
+  params.set('source', source);
+  if (pair) params.set('pair', pair);
+
+  sourceNoteEl.textContent = 'Chargement...';
   const resp = await fetch('/api/backtest?' + params.toString());
   const data = await resp.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { sourceNoteEl.textContent = ''; alert(data.error); return; }
+
+  sourceNoteEl.textContent = SOURCE_LABELS[sourcePair] ?? '';
   drawChart(data.equity_curve);
   renderStats(data.metrics);
   renderTrades(data.trades);
