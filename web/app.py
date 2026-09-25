@@ -279,6 +279,7 @@ _PAGE = """<!DOCTYPE html>
     --bg:#0e1117; --panel:#161b24; --panel-2:#0d1420; --border:#252c38;
     --text:#e9edf4; --muted:#8b96a8; --accent:#2a78d6; --accent-2:#3987e5;
     --good:#17c317; --critical:#e66767; --good-bg:rgba(23,195,23,.12); --critical-bg:rgba(230,103,103,.12);
+    --warn:#e9a64f; --warn-bg:rgba(233,166,79,.12);
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
@@ -286,15 +287,25 @@ _PAGE = """<!DOCTYPE html>
   header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
   header .titles h1 { margin:0; font-size:21px; letter-spacing:-.01em; }
   header .titles p { margin:6px 0 0; color:var(--muted); font-size:13px; max-width:70ch; line-height:1.5; }
+  header nav { display:flex; gap:8px; flex-wrap:wrap; }
   header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; white-space:nowrap; }
   header nav a:hover { color:var(--text); border-color:var(--accent); }
+  header nav a.nav-active { color:var(--text); border-color:var(--accent); background:var(--panel); }
   main { max-width:1080px; margin:0 auto; padding:22px 16px 60px; display:grid; gap:16px; }
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px; }
 
   /* -- sélecteur de source (pills) -- */
   .pills { display:flex; gap:8px; flex-wrap:wrap; }
-  .pill { padding:8px 14px; border-radius:999px; border:1px solid var(--border); background:var(--panel-2); color:var(--muted); font-size:13px; cursor:pointer; font-weight:500; }
+  .pill { padding:8px 14px; border-radius:999px; border:1px solid var(--border); background:var(--panel-2); color:var(--muted); font-size:13px; cursor:pointer; font-weight:500; display:inline-flex; align-items:center; gap:7px; }
   .pill.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .tag { font-size:10px; padding:1px 7px; border-radius:999px; font-weight:600; text-transform:uppercase; letter-spacing:.03em; }
+  .tag-live { background:var(--good-bg); color:var(--good); }
+  .tag-soon { background:var(--warn-bg); color:var(--warn); }
+  .pill.active .tag-live, .pill.active .tag-soon { background:rgba(255,255,255,.2); color:#fff; }
+  .soon-note { margin-top:16px; background:var(--panel-2); border:1px solid var(--border); border-radius:9px; padding:16px; font-size:13.5px; color:#c7cedb; line-height:1.6; }
+  .soon-note b { color:var(--text); }
+  .soon-note .steps { margin:10px 0 0; padding-left:20px; }
+  .soon-note .steps li { margin-bottom:5px; }
   .live-row { display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); }
   .live-dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
   .live-dot.on { background:var(--good); box-shadow:0 0 0 0 var(--good); animation:pulse 1.8s infinite; }
@@ -372,24 +383,41 @@ _PAGE = """<!DOCTYPE html>
     <h1>AVONAM — Tableau de bord (simulation)</h1>
     <p>Backtest et paper trading en direct, sur données d'exemple ou sur données Kraken réelles, avec explication de chaque chiffre affiché. Aucun ordre réel, aucune clé API, aucune connexion bancaire — voir « Comprendre ce tableau de bord » en bas de page.</p>
   </div>
-  <nav><a href="/a-propos">À propos — à quoi sert ce site ?</a></nav>
+  <nav>
+    <a href="/" class="nav-active">Tableau de bord</a>
+    <a href="/a-propos">À propos</a>
+    <a href="/live">Espace privé</a>
+  </nav>
 </header>
 <main>
 
   <div class="panel">
-    <div class="pills" id="source-pills">
-      <button type="button" class="pill active" data-source="demo" data-pair="">Données d'exemple</button>
-      <button type="button" class="pill" data-source="kraken" data-pair="XBTEUR">Kraken · BTC/EUR</button>
-      <button type="button" class="pill" data-source="kraken" data-pair="ETHEUR">Kraken · ETH/EUR</button>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Classe d'actifs</div>
+    <div class="pills" id="asset-pills">
+      <button type="button" class="pill active" data-asset="crypto">Crypto <span class="tag tag-live">disponible</span></button>
+      <button type="button" class="pill" data-asset="stock">Actions <span class="tag tag-soon">à venir</span></button>
+      <button type="button" class="pill" data-asset="commodity">Matières premières <span class="tag tag-soon">à venir</span></button>
     </div>
-    <div class="live-row" id="live-row" style="display:none;">
-      <span class="live-dot" id="live-dot"></span>
-      <span id="freshness">—</span>
-      <label class="toggle"><input type="checkbox" id="auto-refresh-toggle" checked> Actualisation auto. (5 min)</label>
-      <button type="button" class="refresh-btn" id="refresh-now">Actualiser maintenant</button>
+
+    <div id="crypto-sources">
+      <div style="font-size:12px;color:var(--muted);margin:16px 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Source de données</div>
+      <div class="pills" id="source-pills">
+        <button type="button" class="pill active" data-source="demo" data-pair="">Données d'exemple</button>
+        <button type="button" class="pill" data-source="kraken" data-pair="XBTEUR">Kraken · BTC/EUR</button>
+        <button type="button" class="pill" data-source="kraken" data-pair="ETHEUR">Kraken · ETH/EUR</button>
+      </div>
+      <div class="live-row" id="live-row" style="display:none;">
+        <span class="live-dot" id="live-dot"></span>
+        <span id="freshness">—</span>
+        <label class="toggle"><input type="checkbox" id="auto-refresh-toggle" checked> Actualisation auto. (5 min)</label>
+        <button type="button" class="refresh-btn" id="refresh-now">Actualiser maintenant</button>
+      </div>
     </div>
+
+    <div id="soon-note" class="soon-note" style="display:none;"></div>
   </div>
 
+  <div id="crypto-analysis">
   <details class="panel">
     <summary>Réglages avancés (stratégie et gestion du risque)</summary>
     <div class="sliders">
@@ -442,6 +470,7 @@ _PAGE = """<!DOCTYPE html>
       <th>Entrée</th><th>Sortie</th><th>Sens</th><th>Prix entrée</th><th>Prix sortie</th><th>Raison</th><th>P&amp;L</th>
     </tr></thead><tbody></tbody></table>
   </div>
+  </div>
 
   <details class="panel help">
     <summary>Comprendre ce tableau de bord</summary>
@@ -484,6 +513,54 @@ const capitalInput = document.getElementById('initial_capital');
 
 const SLIDER_IDS = ['fast_period','slow_period','risk_per_trade_pct','stop_loss_pct','take_profit_pct','max_drawdown_pct'];
 const SLIDER_SUFFIX = { fast_period:'', slow_period:'', risk_per_trade_pct:'%', stop_loss_pct:'%', take_profit_pct:'%', max_drawdown_pct:'%' };
+
+// -- classes d'actifs : crypto disponible, actions/matières premières à venir --
+const assetPillsEl = document.getElementById('asset-pills');
+const cryptoSourcesEl = document.getElementById('crypto-sources');
+const cryptoAnalysisEl = document.getElementById('crypto-analysis');
+const soonNoteEl = document.getElementById('soon-note');
+
+const SOON_CONTENT = {
+  stock: {
+    name: 'Actions',
+    examples: 'actions et ETF (Apple, Tesla, indices...)',
+    broker: 'Alpaca ou Interactive Brokers',
+  },
+  commodity: {
+    name: 'Matières premières',
+    examples: 'or, pétrole, gaz... (via contrats à terme)',
+    broker: 'Interactive Brokers',
+  },
+};
+
+assetPillsEl.addEventListener('click', e => {
+  const btn = e.target.closest('.pill');
+  if (!btn) return;
+  [...assetPillsEl.children].forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  const asset = btn.dataset.asset;
+
+  if (asset === 'crypto') {
+    cryptoSourcesEl.style.display = '';
+    cryptoAnalysisEl.style.display = '';
+    soonNoteEl.style.display = 'none';
+    runBacktest();
+  } else {
+    const c = SOON_CONTENT[asset];
+    cryptoSourcesEl.style.display = 'none';
+    cryptoAnalysisEl.style.display = 'none';
+    soonNoteEl.style.display = 'block';
+    soonNoteEl.innerHTML = `
+      <b>${c.name} — à venir.</b> Le trading de ${c.examples} n'est pas encore actif sur ce site.
+      L'architecture est déjà prête à l'accueillir (couche « place de marché » commune à tous les actifs),
+      mais deux choses restent nécessaires :
+      <ol class="steps">
+        <li>Ouvrir un compte chez un courtier qui expose une API pour ces actifs (${c.broker}), avec ses clés.</li>
+        <li>Y brancher un petit adaptateur : tout le reste (stratégie, gestion du risque, plafonds, journal, confirmation) fonctionnera à l'identique.</li>
+      </ol>
+      Kraken, utilisé pour le crypto, ne couvre pas ces marchés, d'où le besoin d'un autre courtier. Et comme pour le crypto, aucun de ces marchés n'offre de gain garanti.`;
+  }
+});
 
 function fmt(n) { return typeof n === 'number' ? n.toLocaleString('fr-BE', {maximumFractionDigits: 2}) : n; }
 
@@ -668,8 +745,10 @@ _LIVE_PAGE = """<!DOCTYPE html>
   body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
   header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
   header h1 { margin:0; font-size:20px; }
+  header nav { display:flex; gap:8px; flex-wrap:wrap; }
   header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; }
   header nav a:hover { color:var(--text); border-color:var(--accent); }
+  header nav a.nav-active { color:var(--text); border-color:var(--accent); background:var(--panel); }
   main { max-width:720px; margin:0 auto; padding:24px 16px 60px; display:grid; gap:16px; }
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px 20px; }
   .mode-banner { padding:10px 14px; border-radius:9px; font-size:13.5px; font-weight:600; }
@@ -699,7 +778,11 @@ _LIVE_PAGE = """<!DOCTYPE html>
 <body>
 <header>
   <h1>AVONAM — Trading réel (privé)</h1>
-  <nav><a href="/">← Tableau de bord public</a></nav>
+  <nav>
+    <a href="/">Tableau de bord</a>
+    <a href="/a-propos">À propos</a>
+    <a href="/live" class="nav-active">Espace privé</a>
+  </nav>
 </header>
 <main>
   <div id="mode-banner" class="mode-banner mode-shadow">Chargement…</div>
@@ -847,8 +930,10 @@ _ABOUT_PAGE = """<!DOCTYPE html>
   body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
   header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
   header h1 { margin:0; font-size:21px; letter-spacing:-.01em; }
+  header nav { display:flex; gap:8px; flex-wrap:wrap; }
   header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; white-space:nowrap; }
   header nav a:hover { color:var(--text); border-color:var(--accent); }
+  header nav a.nav-active { color:var(--text); border-color:var(--accent); background:var(--panel); }
   main { max-width:760px; margin:0 auto; padding:32px 16px 60px; }
   h2 { font-size:16px; margin:34px 0 12px; }
   h2:first-of-type { margin-top:0; }
@@ -872,7 +957,11 @@ _ABOUT_PAGE = """<!DOCTYPE html>
 <body>
 <header>
   <h1>AVONAM — À propos</h1>
-  <nav><a href="/">← Retour au tableau de bord</a></nav>
+  <nav>
+    <a href="/">Tableau de bord</a>
+    <a href="/a-propos" class="nav-active">À propos</a>
+    <a href="/live">Espace privé</a>
+  </nav>
 </header>
 <main>
   <p class="lede">AVONAM est un logiciel pédagogique de trading algorithmique. Il sert à apprendre et tester des stratégies de trading (achat/vente automatique selon des règles), sans jamais risquer d'argent réel sur ce site.</p>
@@ -889,6 +978,17 @@ _ABOUT_PAGE = """<!DOCTYPE html>
     <span class="badge">Aucun ordre envoyé</span>
     <span class="badge">Aucune clé API sur ce site</span>
     <span class="badge">Aucune connexion bancaire</span>
+  </div>
+
+  <h2>Classes d'actifs</h2>
+  <p>Le système est conçu comme une plateforme multi-marchés. Aujourd'hui, le crypto est disponible ; les actions et les matières premières sont préparées mais pas encore actives.</p>
+  <div class="card good">
+    <h3>✓ Crypto — disponible</h3>
+    <p style="margin-bottom:0">Bitcoin, Ethereum, via Kraken. Données de marché en direct, simulation, et trading réel possible (avec un compte Kraken financé et ses clés sur le worker).</p>
+  </div>
+  <div class="card">
+    <h3>⏳ Actions et matières premières — à venir</h3>
+    <p style="margin-bottom:0">Actions et ETF (via Alpaca ou Interactive Brokers), matières premières (via Interactive Brokers). L'architecture est déjà prête à les accueillir : une couche « place de marché » commune fait que le jour où un compte courtier est ouvert, il suffit d'un petit adaptateur, sans réécrire la stratégie, la gestion du risque ni les sécurités. Kraken ne couvre pas ces marchés, d'où le besoin d'un autre courtier.</p>
   </div>
 
   <h2>Ce qui est automatique aujourd'hui</h2>
