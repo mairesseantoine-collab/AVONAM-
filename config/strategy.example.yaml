@@ -1,0 +1,28 @@
+# Configuration d'exemple : stratégie de croisement de moyennes mobiles.
+#
+# Ce fichier permet de changer les paramètres de la stratégie et du risque
+# sans toucher au code Python. Copiez-le (ex. `my_strategy.yaml`) pour
+# expérimenter d'autres réglages.
+
+data:
+  csv_path: data/sample/DEMO.csv
+
+strategy:
+  name: sma_crossover
+  fast_period: 20
+  slow_period: 50
+  allow_short: false
+
+risk:
+  initial_capital: 10000
+  risk_per_trade_pct: 1.0     # % du capital risqué par trade
+  stop_loss_pct: 2.0          # distance du stop-loss, en % du prix d'entrée
+  take_profit_pct: 4.0        # distance du take-profit, en % du prix d'entrée
+  max_drawdown_pct: 20.0      # kill switch : arrêt des nouvelles entrées
+
+execution:
+  commission_pct: 0.05        # frais de courtage simulés, en % du notionnel
+  slippage_pct: 0.05          # glissement de prix simulé, en % du prix
+
+output:
+  dir: output
