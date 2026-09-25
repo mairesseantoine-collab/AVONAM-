@@ -170,6 +170,24 @@ Ordre recommandé, sans exception : `AVONAM_MODE=shadow` plusieurs jours,
 lecture du journal d'audit, puis seulement ensuite `live_real` avec le
 petit capital déjà déposé.
 
+### Passer un premier ordre réel de validation
+
+En `live_real`, le worker attend un signal de la stratégie avant d'acheter :
+tant qu'aucun croisement de moyennes n'apparaît, il reste en `hold`, c'est
+normal. Pour valider toute la chaîne réelle de bout en bout sans attendre ce
+signal, une stratégie dédiée force un seul ordre d'achat, borné par tous les
+plafonds (par ordre, position, cumulé, coupe-circuit) :
+
+1. Sur le worker, ajoutez `AVONAM_STRATEGY` = `entry_now`, et vérifiez que
+   `AVONAM_MODE` = `live_real`. Gardez un plafond minuscule
+   (`AVONAM_MAX_ORDER_EUR=10`, `AVONAM_MAX_POSITION_EUR=50`).
+2. Au prochain cycle, le worker passe un achat d'environ 10 € et vous
+   recevez l'email « Ordre réel buy exécuté ». Une fois l'actif détenu, il
+   ne rachète pas (plafond de position).
+3. **Remettez ensuite `AVONAM_STRATEGY` sur `filtered`** (ou `simple`) : le
+   worker repasse en logique de marché normale. `entry_now` n'est pas une
+   stratégie de rendement, uniquement un test de la chaîne d'exécution.
+
 ## Alertes email (optionnel)
 
 Pour être prévenu par email quand un vrai ordre est passé (ou quand le
