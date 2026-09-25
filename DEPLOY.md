@@ -170,6 +170,25 @@ Ordre recommandé, sans exception : `AVONAM_MODE=shadow` plusieurs jours,
 lecture du journal d'audit, puis seulement ensuite `live_real` avec le
 petit capital déjà déposé.
 
+## Alertes email (optionnel)
+
+Pour être prévenu par email quand un vrai ordre est passé (ou quand le
+coupe-circuit se déclenche), ajoutez ces variables au **worker** (et au
+site si vous confirmez aussi des ordres depuis `/live`). Sans elles, aucune
+alerte n'est envoyée, et rien ne plante.
+
+| Variable | Exemple |
+|---|---|
+| `ALERT_SMTP_HOST` | `smtp.gmail.com` |
+| `ALERT_SMTP_PORT` | `587` |
+| `ALERT_SMTP_USER` | votre adresse email |
+| `ALERT_SMTP_PASSWORD` | un « mot de passe d'application » (pas votre mot de passe principal) |
+| `ALERT_EMAIL_TO` | où recevoir les alertes |
+
+Avec Gmail, il faut créer un « mot de passe d'application » dans les
+réglages de sécurité Google, le mot de passe habituel ne fonctionne pas
+pour SMTP.
+
 ## Et après ?
 
 Une fois une URL publique obtenue, étapes naturelles suivantes :

@@ -344,6 +344,15 @@ def api_live_execute(body: dict, _auth: bool = Depends(require_live_auth)) -> di
         result = session.confirm_and_execute(proposal, human_confirmed=True)
         if result is None:
             return {"executed": False, "reason": "Refusé par les garde-fous (mode SHADOW ou plafond), voir l'audit."}
+        try:
+            from common.notify import send_email
+            send_email(
+                f"Ordre réel {proposal.order.side} confirmé",
+                f"Ordre {proposal.order.side} de ~{proposal.estimated_notional_eur:.2f} € "
+                f"sur {proposal.order.pair} confirmé depuis la page privée (id {result.order_id}).",
+            )
+        except Exception:
+            pass
         return {"executed": True, "status": result.status, "order_id": result.order_id}
     except Exception as exc:
         return {"executed": False, "reason": str(exc)}

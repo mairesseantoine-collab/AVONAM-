@@ -27,6 +27,17 @@ from broker.live.session import LiveTradingSession
 from broker.models import OrderResult
 
 
+def _alert(subject: str, body: str) -> None:
+    """Envoie une alerte email si configurée ; sans effet et sans erreur
+    sinon (voir common/notify.py). Une alerte ne doit jamais casser le
+    trading."""
+    try:
+        from common.notify import send_email
+        send_email(subject, body)
+    except Exception:
+        pass
+
+
 @dataclass
 class TickResult:
     acted: bool
@@ -54,6 +65,7 @@ class AutonomousRunner:
         un résultat normal, journalisé."""
         if self.session.killswitch.is_tripped:
             self.audit_log.log_event("autonomous_halted", {"reason": "coupe-circuit déclenché, reset manuel requis"})
+            _alert("Coupe-circuit déclenché", "Le robot s'est arrêté après des échecs répétés. Une intervention manuelle (reset) est requise.")
             return TickResult(False, "Coupe-circuit déclenché : arrêt, intervention humaine requise.")
 
         # Respect des horaires de marché : sans effet sur le crypto (ouvert
@@ -86,4 +98,10 @@ class AutonomousRunner:
                 payload = entries[-1].payload
                 reason = payload.get("reason") or payload.get("error") or reason
             return TickResult(False, f"Non exécuté — {reason}")
+
+        _alert(
+            f"Ordre réel {proposal.order.side} exécuté",
+            f"Le robot a passé un ordre {proposal.order.side} de ~{proposal.estimated_notional_eur:.2f} € "
+            f"sur {proposal.order.pair} (id {result.order_id}, statut {result.status}).",
+        )
         return TickResult(True, f"Ordre {proposal.order.side} exécuté (~{proposal.estimated_notional_eur:.2f} €).", result)
