@@ -1,0 +1,49 @@
+# Configuration d'exemple pour le module bancaire PSD2 — SANDBOX UNIQUEMENT.
+#
+# ⚠️ Toutes les URLs ci-dessous sont des PLACEHOLDERS illustratifs. Elles ne
+# correspondent à aucun endpoint réel. Pour obtenir les vraies URLs de
+# sandbox :
+#   1. Inscrivez-vous sur le portail développeur officiel de la banque
+#      (cherchez "developer portal PSD2" + nom de la banque — les noms de
+#      domaine changent, ne faites confiance qu'aux liens trouvés depuis le
+#      site officiel de la banque).
+#   2. Créez une application de test : la banque vous fournit alors un
+#      client_id, éventuellement un client_secret, et les vraies URLs
+#      sandbox (autorize/token/AIS/PIS).
+#   3. Remplacez les valeurs ci-dessous par les vraies. Le code Python ne
+#      change pas : seule cette config change.
+#
+# Voir le README, section « Intégration bancaire PSD2 », pour le détail des
+# obligations légales avant d'envisager un jour la production.
+
+bank:
+  name: "exemple-sandbox"
+  environment: "sandbox"
+
+  oauth_authorize_url: "https://sandbox.exemple-banque.be/psd2/oauth2/authorize"
+  oauth_token_url: "https://sandbox.exemple-banque.be/psd2/oauth2/token"
+  ais_base_url: "https://sandbox.exemple-banque.be/psd2/xs2a"
+  pis_base_url: "https://sandbox.exemple-banque.be/psd2/xs2a"
+
+  client_id: "REMPLACEZ_PAR_VOTRE_CLIENT_ID_SANDBOX"
+  redirect_uri: "http://localhost:8000/bank/callback"
+  client_secret_env_var: "BANK_CLIENT_SECRET"
+
+  # Laissés vides en sandbox. Obligatoires en production (voir bank/config.py) :
+  qwac_cert_path: null
+  qseal_cert_path: null
+  tpp_authorisation_number: null
+
+# Comptes utilisés par le pont trading ↔ banque (bank/bridge.py). En
+# sandbox, ce sont les IBAN de test fournis par la banque ; en production,
+# ce seraient VOS DEUX PROPRES comptes (jamais un tiers) — c'est ce qui
+# rend la liste blanche du kill switch pertinente.
+funding:
+  debtor_iban: "BE68539007547034"   # compte courant (sandbox)
+  creditor_iban: "BE71096123456769" # compte de courtage (sandbox)
+  creditor_name: "Mon courtier (sandbox)"
+
+killswitch:
+  max_amount_per_payment: 500.0
+  max_amount_per_day: 1000.0
+  max_consecutive_failures: 3
