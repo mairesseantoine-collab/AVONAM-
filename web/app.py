@@ -9,13 +9,15 @@ réelles. Il n'expose en revanche JAMAIS :
       réels, ne doit jamais être accessible depuis un serveur public sans
       authentification utilisateur, HTTPS, et le statut TPP requis (voir
       le README, section « Intégration bancaire PSD2 ») ;
-    - les endpoints privés de `broker/kraken/` (solde, passage d'ordres,
-      `LiveExecutionBridge`) : aucune clé API Kraken n'est lue par ce
-      fichier, et aucun ordre, dry-run ou réel, ne peut être déclenché
-      depuis cette interface publique. « Automatiser » ici veut dire
-      auto-rafraîchir un tableau de bord en lecture seule, jamais
-      enchaîner des ordres réels tout seul — voir la section « Exécution
-      réelle crypto » du README avant d'envisager d'aller plus loin.
+    - l'exécution réelle sur les routes PUBLIQUES (`/`, `/api/backtest`) :
+      elles ne lisent aucune clé et ne passent aucun ordre.
+
+L'exécution réelle vit uniquement sur les routes `/live` et
+`/api/live/*`, protégées par mot de passe (`AVONAM_DASHBOARD_PASSWORD`) et
+désactivées tant que ce mot de passe n'est pas défini. Même authentifié,
+un ordre réel exige le mode LIVE_REAL ET le mot de confirmation, et reste
+plafonné par le kill switch (voir `broker/live/`). Le plafond cumulé borne
+l'exposition totale quoi qu'il arrive.
 
 Lancer en local :
     python -m uvicorn web.app:app --reload
@@ -25,10 +27,13 @@ Lancer en conteneur : voir Dockerfile / DEPLOY.md à la racine du projet.
 
 from __future__ import annotations
 
+import os
+import secrets
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from avonam.backtest.engine import BacktestEngine
 from avonam.data.loader import load_csv
@@ -44,6 +49,84 @@ DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "sample" / "DEMO.c
 # Endpoint PUBLIC uniquement (aucune clé API, aucun ordre, aucun risque) —
 # voir broker/kraken/market_data.py et l'avertissement en tête de ce fichier.
 KRAKEN_PAIRS = {"XBTEUR", "ETHEUR"}
+
+# --- Espace trading réel (PRIVÉ, protégé par mot de passe) ----------------
+# Séparé du tableau de bord public : c'est le seul endroit de l'interface web
+# qui touche aux clés Kraken et peut exécuter un ordre réel. Désactivé tant
+# que AVONAM_DASHBOARD_PASSWORD n'est pas défini dans l'environnement Render.
+_basic = HTTPBasic(auto_error=False)
+
+CONFIRM_WORD = "EXECUTER"
+
+
+def require_live_auth(credentials: HTTPBasicCredentials | None = Depends(_basic)) -> bool:
+    password = os.environ.get("AVONAM_DASHBOARD_PASSWORD")
+    if not password:
+        raise HTTPException(
+            status_code=503,
+            detail="Espace trading réel non configuré (variable AVONAM_DASHBOARD_PASSWORD absente).",
+        )
+    if credentials is None or not secrets.compare_digest(credentials.password, password):
+        raise HTTPException(status_code=401, detail="Accès refusé.", headers={"WWW-Authenticate": "Basic"})
+    return True
+
+
+def _build_live_session():
+    """Construit une session de trading réel à partir de l'environnement.
+    Isolé dans une fonction pour être remplaçable dans les tests."""
+    from broker.killswitch import TradingKillSwitch
+    from broker.kraken.client import KrakenClient
+    from broker.live.agent import RuleBasedAgent
+    from broker.live.config import LiveTradingConfig
+    from broker.live.session import LiveTradingSession
+    from common.audit_log import AuditLog
+    from common.http_transport import RequestsTransport
+
+    config = LiveTradingConfig.from_env()
+    client = KrakenClient(
+        RequestsTransport(),
+        api_key=os.environ.get("KRAKEN_API_KEY"),
+        api_secret=os.environ.get("KRAKEN_API_SECRET"),
+    )
+    audit = AuditLog(os.environ.get("AVONAM_AUDIT_PATH", "output/live_audit.log"))
+    killswitch = TradingKillSwitch(
+        max_notional_per_order=config.max_notional_per_order_eur * 1.2,
+        max_notional_per_day=config.max_notional_per_day_eur,
+        allowed_pairs=[config.pair],
+        max_consecutive_failures=config.max_consecutive_failures,
+    )
+    session = LiveTradingSession(
+        client=client,
+        strategy=SMACrossoverStrategy(fast_period=20, slow_period=50),
+        agent=RuleBasedAgent(),
+        killswitch=killswitch,
+        audit_log=audit,
+        config=config,
+    )
+    return session, config
+
+
+def _proposal_payload(session, config) -> dict:
+    proposal = session.propose()
+    return {
+        "mode": config.mode.value,
+        "pair": config.pair,
+        "caps": {
+            "per_order_eur": config.max_notional_per_order_eur,
+            "per_day_eur": config.max_notional_per_day_eur,
+            "total_eur": config.max_total_notional_eur,
+        },
+        "action": proposal.decision.action,
+        "confidence": proposal.decision.confidence,
+        "rationale": proposal.decision.rationale,
+        "has_order": proposal.order is not None,
+        "side": proposal.order.side if proposal.order else None,
+        "volume": proposal.order.volume if proposal.order else None,
+        "estimated_notional_eur": proposal.estimated_notional_eur,
+        "last_price": proposal.last_price,
+        "allowed": proposal.allowed,
+        "block_reason": proposal.block_reason,
+    }
 
 
 @app.get("/api/backtest")
@@ -118,6 +201,41 @@ def index() -> str:
 @app.get("/a-propos", response_class=HTMLResponse)
 def about() -> str:
     return _ABOUT_PAGE
+
+
+@app.get("/live", response_class=HTMLResponse)
+def live_page(_auth: bool = Depends(require_live_auth)) -> str:
+    return _LIVE_PAGE
+
+
+@app.get("/api/live/propose")
+def api_live_propose(_auth: bool = Depends(require_live_auth)) -> dict:
+    try:
+        session, config = _build_live_session()
+        return _proposal_payload(session, config)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.post("/api/live/execute")
+def api_live_execute(body: dict, _auth: bool = Depends(require_live_auth)) -> dict:
+    # Le clic authentifié + le mot de confirmation constituent la
+    # confirmation humaine. En mode SHADOW, confirm_and_execute refuse de
+    # toute façon (aucun ordre réel), c'est une double sécurité.
+    if body.get("confirm") != CONFIRM_WORD:
+        return {"executed": False, "reason": f'Confirmation absente (attendu "{CONFIRM_WORD}").'}
+
+    try:
+        session, config = _build_live_session()
+        proposal = session.propose()  # proposition fraîche, jamais une proposition périmée
+        if proposal.order is None:
+            return {"executed": False, "reason": proposal.block_reason or "Aucun ordre à exécuter (attente)."}
+        result = session.confirm_and_execute(proposal, human_confirmed=True)
+        if result is None:
+            return {"executed": False, "reason": "Refusé par les garde-fous (mode SHADOW ou plafond), voir l'audit."}
+        return {"executed": True, "status": result.status, "order_id": result.order_id}
+    except Exception as exc:
+        return {"executed": False, "reason": str(exc)}
 
 
 _PAGE = """<!DOCTYPE html>
@@ -504,6 +622,156 @@ async function runBacktest() {
 
 setupAutoRefresh();
 runBacktest();
+</script>
+</body>
+</html>"""
+
+
+_LIVE_PAGE = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AVONAM — Trading réel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme:dark; --bg:#0e1117; --panel:#161b24; --panel-2:#0d1420; --border:#252c38; --text:#e9edf4; --muted:#8b96a8; --accent:#2a78d6; --good:#17c317; --critical:#e66767; --warn:#e9a64f; --good-bg:rgba(23,195,23,.12); --critical-bg:rgba(230,103,103,.12); --warn-bg:rgba(233,166,79,.12); }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
+  header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:20px; }
+  header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; }
+  header nav a:hover { color:var(--text); border-color:var(--accent); }
+  main { max-width:720px; margin:0 auto; padding:24px 16px 60px; display:grid; gap:16px; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px 20px; }
+  .mode-banner { padding:10px 14px; border-radius:9px; font-size:13.5px; font-weight:600; }
+  .mode-shadow { background:var(--warn-bg); color:var(--warn); border:1px solid rgba(233,166,79,.3); }
+  .mode-live { background:var(--critical-bg); color:var(--critical); border:1px solid rgba(230,103,103,.35); }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid var(--border); font-size:14px; }
+  .row:last-child { border-bottom:none; }
+  .row .k { color:var(--muted); }
+  .row .v { font-family:"IBM Plex Mono",monospace; text-align:right; }
+  .v.buy { color:var(--good); } .v.sell { color:var(--warn); } .v.hold { color:var(--muted); }
+  .rationale { background:var(--panel-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:13.5px; color:#c7cedb; line-height:1.6; }
+  .caps { font-size:12px; color:var(--muted); margin-top:10px; }
+  button { padding:10px 16px; border:none; border-radius:7px; font-weight:600; cursor:pointer; font-size:14px; }
+  .btn-refresh { background:var(--panel-2); color:var(--text); border:1px solid var(--border); }
+  .btn-refresh:hover { border-color:var(--accent); }
+  .btn-exec { background:var(--critical); color:#fff; width:100%; margin-top:12px; }
+  .btn-exec:disabled { background:var(--border); color:var(--muted); cursor:not-allowed; }
+  .confirm-box { margin-top:12px; }
+  .confirm-box input { width:100%; padding:9px; background:var(--panel-2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:"IBM Plex Mono",monospace; }
+  .confirm-box label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .result { margin-top:12px; padding:10px 14px; border-radius:8px; font-size:13.5px; display:none; }
+  .result.ok { background:var(--good-bg); color:var(--good); display:block; }
+  .result.ko { background:var(--critical-bg); color:var(--critical); display:block; }
+  .muted { color:var(--muted); font-size:12.5px; line-height:1.6; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AVONAM — Trading réel (privé)</h1>
+  <nav><a href="/">← Tableau de bord public</a></nav>
+</header>
+<main>
+  <div id="mode-banner" class="mode-banner mode-shadow">Chargement…</div>
+
+  <div class="panel">
+    <div id="proposal">Chargement de la proposition…</div>
+    <div class="caps" id="caps"></div>
+  </div>
+
+  <div class="panel">
+    <div class="rationale" id="rationale">—</div>
+    <div id="exec-zone"></div>
+    <div class="result" id="result"></div>
+  </div>
+
+  <button class="btn-refresh" id="refresh">Rafraîchir la proposition</button>
+
+  <p class="muted">Cet espace est privé (protégé par mot de passe) et distinct du tableau de bord public. Un ordre réel n'est possible qu'en mode LIVE_REAL, après avoir tapé le mot de confirmation. En mode SHADOW, rien n'est jamais exécuté. Plafond de sécurité de fond : le total cumulé ne peut pas dépasser la limite configurée.</p>
+</main>
+
+<script>
+const CONFIRM_WORD = "EXECUTER";
+const bannerEl = document.getElementById('mode-banner');
+const proposalEl = document.getElementById('proposal');
+const capsEl = document.getElementById('caps');
+const rationaleEl = document.getElementById('rationale');
+const execZoneEl = document.getElementById('exec-zone');
+const resultEl = document.getElementById('result');
+const refreshBtn = document.getElementById('refresh');
+let currentMode = 'shadow';
+
+function fmt(n) { return typeof n === 'number' ? n.toLocaleString('fr-BE', {maximumFractionDigits: 2}) : n; }
+
+async function loadProposal() {
+  resultEl.className = 'result';
+  proposalEl.textContent = 'Chargement…';
+  execZoneEl.innerHTML = '';
+  const resp = await fetch('/api/live/propose');
+  const d = await resp.json();
+  if (d.error) { proposalEl.innerHTML = '<span style="color:var(--critical)">Erreur : ' + d.error + '</span>'; return; }
+
+  currentMode = d.mode;
+  if (d.mode === 'live_real') {
+    bannerEl.className = 'mode-banner mode-live';
+    bannerEl.textContent = '● MODE RÉEL (LIVE_REAL) — un ordre confirmé engagera de l\\'argent réel';
+  } else {
+    bannerEl.className = 'mode-banner mode-shadow';
+    bannerEl.textContent = '○ MODE SHADOW — simulation, aucun ordre réel ne sera exécuté';
+  }
+
+  const actionClass = d.action === 'buy' ? 'buy' : (d.action === 'sell' ? 'sell' : 'hold');
+  proposalEl.innerHTML = `
+    <div class="row"><span class="k">Paire</span><span class="v">${d.pair}</span></div>
+    <div class="row"><span class="k">Dernier prix</span><span class="v">${fmt(d.last_price)} €</span></div>
+    <div class="row"><span class="k">Décision de l'agent</span><span class="v ${actionClass}">${d.action.toUpperCase()} (${Math.round(d.confidence*100)}%)</span></div>
+    ${d.has_order ? `<div class="row"><span class="k">Ordre proposé</span><span class="v ${actionClass}">${d.side.toUpperCase()} ${d.volume} (~${fmt(d.estimated_notional_eur)} €)</span></div>` : ''}
+    ${!d.allowed && d.block_reason ? `<div class="row"><span class="k">Bloqué</span><span class="v" style="color:var(--warn)">${d.block_reason}</span></div>` : ''}
+  `;
+  capsEl.textContent = `Plafonds : ${d.caps.per_order_eur} €/ordre · ${d.caps.per_day_eur} €/jour · ${d.caps.total_eur} € cumulés`;
+  rationaleEl.textContent = d.rationale;
+
+  if (d.has_order && d.allowed) {
+    if (d.mode === 'live_real') {
+      execZoneEl.innerHTML = `
+        <div class="confirm-box">
+          <label>Pour exécuter cet ordre RÉEL, tapez ${CONFIRM_WORD} ci-dessous :</label>
+          <input id="confirm-input" autocomplete="off" placeholder="${CONFIRM_WORD}">
+        </div>
+        <button class="btn-exec" id="exec-btn">Confirmer et exécuter l'ordre réel</button>`;
+      document.getElementById('exec-btn').addEventListener('click', execute);
+    } else {
+      execZoneEl.innerHTML = `<button class="btn-exec" disabled>Exécution désactivée (mode SHADOW)</button>`;
+    }
+  } else {
+    execZoneEl.innerHTML = `<p class="muted">Aucun ordre à confirmer pour l'instant.</p>`;
+  }
+}
+
+async function execute() {
+  const confirm = document.getElementById('confirm-input').value.trim();
+  const btn = document.getElementById('exec-btn');
+  btn.disabled = true; btn.textContent = 'Envoi…';
+  const resp = await fetch('/api/live/execute', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirm}),
+  });
+  const d = await resp.json();
+  if (d.executed) {
+    resultEl.className = 'result ok';
+    resultEl.textContent = `Ordre envoyé : statut ${d.status}, id ${d.order_id}`;
+  } else {
+    resultEl.className = 'result ko';
+    resultEl.textContent = 'Non exécuté : ' + (d.reason || 'raison inconnue');
+  }
+  setTimeout(loadProposal, 1500);
+}
+
+refreshBtn.addEventListener('click', loadProposal);
+loadProposal();
 </script>
 </body>
 </html>"""

@@ -96,6 +96,42 @@ votre-domaine.be {
   l'image Docker (voir `Dockerfile`) : le tableau de bord fonctionne dès le
   démarrage, sans base de données ni configuration supplémentaire.
 
+## Espace trading réel privé (`/live`) sur Render
+
+Le service expose une page privée `/live`, protégée par mot de passe, où
+l'agent affiche ses propositions et où vous confirmez chaque ordre. Elle
+est **désactivée par défaut** : tant que vous ne définissez pas les
+variables ci-dessous dans Render, `/live` renvoie une erreur 503 et rien
+ne touche à Kraken.
+
+Dans Render : votre service → **Settings** → section **Environment** →
+**Add Environment Variable**, puis ajoutez :
+
+| Variable | Rôle | Exemple |
+|---|---|---|
+| `AVONAM_DASHBOARD_PASSWORD` | Mot de passe d'accès à `/live` (choisissez-en un long) | `un-mot-de-passe-long-et-unique` |
+| `KRAKEN_API_KEY` | Clé API Kraken (permissions minimales, **jamais** « Withdraw ») | — |
+| `KRAKEN_API_SECRET` | Secret API Kraken | — |
+| `AVONAM_MODE` | `shadow` (défaut, aucun ordre réel) ou `live_real` | `shadow` |
+| `AVONAM_MAX_ORDER_EUR` | Plafond par ordre (optionnel) | `10` |
+| `AVONAM_MAX_TOTAL_EUR` | Plafond cumulé de sécurité (optionnel) | `50` |
+
+Ces variables Render sont **privées** (contrairement aux variables de
+l'environnement Claude Code), donc c'est un endroit acceptable pour la clé.
+
+Ordre recommandé :
+1. Définissez d'abord seulement `AVONAM_DASHBOARD_PASSWORD` (sans les clés
+   Kraken). Ouvrez `https://votre-service.onrender.com/live`, connectez-vous,
+   vérifiez que la page s'affiche en mode SHADOW.
+2. Ajoutez ensuite les clés Kraken et laissez `AVONAM_MODE=shadow` plusieurs
+   jours : la page montre ce que l'agent ferait, sans rien exécuter.
+3. Quand vous êtes prêt, passez `AVONAM_MODE=live_real`. Un ordre réel
+   n'est alors possible qu'après vous être connecté ET avoir tapé le mot
+   `EXECUTER`. Le plafond cumulé borne l'exposition totale.
+
+Rappel : le module bancaire (`bank/`) n'est jamais exposé par le service
+web, quel que soit le réglage.
+
 ## Et après ?
 
 Une fois une URL publique obtenue, étapes naturelles suivantes :
