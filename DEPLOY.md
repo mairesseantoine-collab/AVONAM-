@@ -132,6 +132,32 @@ Ordre recommandé :
 Rappel : le module bancaire (`bank/`) n'est jamais exposé par le service
 web, quel que soit le réglage.
 
+## Mode automatique (worker) — le plus risqué
+
+`examples/run_autonomous.py` exécute les ordres seul, sans confirmation à
+chaque fois. À réserver à un usage délibéré, après avoir observé le mode
+SHADOW. Il reste borné par tous les plafonds (par ordre, par jour, cumulé,
+`AVONAM_MAX_TRADES_PER_DAY`, et le coupe-circuit qui l'arrête après des
+échecs répétés).
+
+Sur Render, c'est un **Background Worker** distinct du web service (New +
+→ Background Worker, même dépôt/branche), avec pour Start Command :
+`python -m examples.run_autonomous`. Les Background Workers sont un service
+payant chez Render (pas de palier gratuit permanent).
+
+Variables à définir sur le worker :
+
+| Variable | Valeur |
+|---|---|
+| `AVONAM_MODE` | `shadow` d'abord (tourne à vide), puis `live_real` |
+| `AVONAM_TICK_SECONDS` | intervalle entre deux cycles, ex. `3600` (1 h) |
+| `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` | clé restreinte, jamais « Withdraw » |
+| `AVONAM_MAX_TOTAL_EUR` | plafond cumulé de sécurité, ex. `50` |
+
+Ordre recommandé, sans exception : `AVONAM_MODE=shadow` plusieurs jours,
+lecture du journal d'audit, puis seulement ensuite `live_real` avec le
+petit capital déjà déposé.
+
 ## Et après ?
 
 Une fois une URL publique obtenue, étapes naturelles suivantes :

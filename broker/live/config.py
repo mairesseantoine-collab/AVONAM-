@@ -27,6 +27,7 @@ class LiveTradingConfig:
     max_notional_per_day_eur: float = 30.0
     max_total_notional_eur: float = 50.0   # plafond cumulé (somme des achats déjà exécutés)
     max_consecutive_failures: int = 3
+    max_trades_per_day: int = 3            # garde-fou spécifique au mode automatique
 
     def __post_init__(self) -> None:
         for name in ("max_notional_per_order_eur", "max_notional_per_day_eur", "max_total_notional_eur"):
@@ -34,6 +35,8 @@ class LiveTradingConfig:
                 raise ValueError(f"{name} doit être strictement positif.")
         if self.max_notional_per_order_eur > self.max_total_notional_eur:
             raise ValueError("Le plafond par ordre ne peut pas dépasser le plafond total.")
+        if self.max_trades_per_day <= 0:
+            raise ValueError("max_trades_per_day doit être strictement positif.")
 
     @staticmethod
     def from_env() -> "LiveTradingConfig":
@@ -52,4 +55,5 @@ class LiveTradingConfig:
             max_notional_per_order_eur=_f("AVONAM_MAX_ORDER_EUR", 10.0),
             max_notional_per_day_eur=_f("AVONAM_MAX_DAY_EUR", 30.0),
             max_total_notional_eur=_f("AVONAM_MAX_TOTAL_EUR", 50.0),
+            max_trades_per_day=int(os.environ.get("AVONAM_MAX_TRADES_PER_DAY", 3)),
         )
