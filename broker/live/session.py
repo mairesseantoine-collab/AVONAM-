@@ -23,13 +23,28 @@ from dataclasses import dataclass
 from broker.killswitch import TradingKillSwitch
 from broker.kraken.client import KrakenClient
 from broker.live.agent import AgentDecision, TradingAgent
+from broker.live.assets import base_asset_for
 from broker.live.config import LiveMode, LiveTradingConfig
 from broker.models import Order, OrderResult
 from common.audit_log import AuditLog
 
-# Correspondance paire Kraken → actif de base (nom Kraken interne).
-_BASE_ASSET = {"XBTEUR": "XXBT", "ETHEUR": "XETH"}
 _DUST = 1e-8  # en dessous, on considère qu'on ne détient rien
+_MOMENTUM_LOOKBACK = 24  # barres (≈ 24 h en interval 60 min) pour le classement multi-crypto
+
+
+def _recent_momentum(data, lookback: int = _MOMENTUM_LOOKBACK) -> float:
+    """Rendement récent (close_actuel / close_passé - 1), servant uniquement à
+    classer les candidats du multi-crypto entre eux. 0.0 si l'historique est
+    trop court. Ce n'est pas un signal d'entrée : l'entrée reste décidée par
+    la stratégie."""
+    closes = data["close"]
+    if len(closes) <= 1:
+        return 0.0
+    n = min(lookback, len(closes) - 1)
+    past = float(closes.iloc[-1 - n])
+    if past <= 0:
+        return 0.0
+    return float(closes.iloc[-1]) / past - 1.0
 
 
 @dataclass
@@ -40,6 +55,7 @@ class OrderProposal:
     block_reason: str | None
     last_price: float
     estimated_notional_eur: float
+    momentum: float = 0.0        # rendement récent, sert à classer les candidats du multi-crypto
 
 
 class LiveTradingSession:
@@ -65,7 +81,7 @@ class LiveTradingSession:
         """Volume de l'actif de base détenu (0 si aucun, ou si la lecture
         du solde échoue faute de clé — on reste alors prudent : pas de
         vente proposée)."""
-        base = _BASE_ASSET.get(self.config.pair)
+        base = base_asset_for(self.config.pair)
         if base is None:
             return 0.0
         try:
@@ -93,6 +109,7 @@ class LiveTradingSession:
         signals = self.strategy.generate_signals(data)
         signal = int(signals.iloc[-1])
         last_price = float(data["close"].iloc[-1])
+        momentum = _recent_momentum(data)
         held_volume = self._held_base_volume()
         holding = held_volume > _DUST
 
@@ -166,6 +183,7 @@ class LiveTradingSession:
             block_reason=block_reason,
             last_price=last_price,
             estimated_notional_eur=round(estimated_notional, 2),
+            momentum=momentum,
         )
 
     def _evaluate(self, order, estimated_notional, risk_ok, risk_reason):

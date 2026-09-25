@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY avonam ./avonam
 COPY broker ./broker
 COPY common ./common
+COPY sentiment ./sentiment
 COPY web ./web
 COPY data ./data
 COPY examples ./examples

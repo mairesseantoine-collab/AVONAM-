@@ -13,7 +13,16 @@ capital déjà déposé.
 
 Variables d'environnement lues :
     AVONAM_MODE                 shadow (défaut) | live_real
-    AVONAM_PAIR                 XBTEUR (défaut) | ETHEUR
+    AVONAM_PAIR                 XBTEUR (défaut) | ETHEUR — mono-crypto
+    AVONAM_PAIRS                liste séparée par des virgules, ex.
+                                "XBTEUR,ETHEUR,SOLEUR,ADAEUR,DOTEUR".
+                                Si définie (plus d'une paire), active le
+                                MULTI-CRYPTO : scanne toutes les paires et
+                                n'agit que sur le meilleur candidat par cycle.
+    AVONAM_SENTIMENT_MODE       off | filter (défaut) | tilt — rôle du
+                                sentiment Reddit (jamais un déclencheur, voir
+                                sentiment/__init__.py).
+    AVONAM_SENTIMENT_SUBREDDITS subreddits, ex. "CryptoCurrency,CryptoMarkets"
     AVONAM_TICK_SECONDS         intervalle entre deux cycles (défaut 3600)
     KRAKEN_API_KEY / _SECRET    clé restreinte (jamais « Withdraw »)
     AVONAM_MAX_ORDER_EUR, AVONAM_MAX_DAY_EUR, AVONAM_MAX_TOTAL_EUR,
@@ -26,19 +35,43 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace
 
 from broker.killswitch import TradingKillSwitch
 from broker.kraken.client import KrakenClient
 from broker.live.agent import RuleBasedAgent
 from broker.live.autonomous import AutonomousRunner
 from broker.live.config import LiveMode, LiveTradingConfig
+from broker.live.scanner import PortfolioRunner
 from broker.live.session import LiveTradingSession
 from broker.live.strategy import build_live_strategy
 from common.audit_log import AuditLog
 from common.http_transport import RequestsTransport
 
 
-def build_runner() -> AutonomousRunner:
+def _pairs_from_env(config: LiveTradingConfig) -> list[str]:
+    raw = os.environ.get("AVONAM_PAIRS", "").strip()
+    if not raw:
+        return [config.pair]
+    pairs = [p.strip().upper() for p in raw.split(",") if p.strip()]
+    return pairs or [config.pair]
+
+
+def _build_sentiment_provider():
+    mode = os.environ.get("AVONAM_SENTIMENT_MODE", "filter").strip().lower()
+    if mode == "off":
+        from sentiment.provider import NullSentimentProvider
+        return NullSentimentProvider(), "off"
+    from sentiment.reddit import RedditSentimentProvider
+    subs = os.environ.get("AVONAM_SENTIMENT_SUBREDDITS", "").strip()
+    subreddits = [s.strip() for s in subs.split(",") if s.strip()] or None
+    return RedditSentimentProvider(subreddits=subreddits), mode
+
+
+def build_runner():
+    """Retourne un AutonomousRunner (mono-crypto) ou un PortfolioRunner
+    (multi-crypto) selon AVONAM_PAIRS. Les deux exposent tick() et
+    summary_text(), la boucle principale est identique."""
     config = LiveTradingConfig.from_env()
     client = KrakenClient(
         RequestsTransport(),
@@ -46,21 +79,32 @@ def build_runner() -> AutonomousRunner:
         api_secret=os.environ.get("KRAKEN_API_SECRET"),
     )
     audit = AuditLog(os.environ.get("AVONAM_AUDIT_PATH", "output/live_audit.log"))
+    pairs = _pairs_from_env(config)
+
     killswitch = TradingKillSwitch(
         max_notional_per_order=config.max_notional_per_order_eur * 1.2,
         max_notional_per_day=config.max_notional_per_day_eur,
-        allowed_pairs=[config.pair],
+        allowed_pairs=pairs,
         max_consecutive_failures=config.max_consecutive_failures,
     )
-    session = LiveTradingSession(
-        client=client,
-        strategy=build_live_strategy(),
-        agent=RuleBasedAgent(),
-        killswitch=killswitch,
-        audit_log=audit,
-        config=config,
-    )
-    return AutonomousRunner(session)
+
+    if len(pairs) == 1:
+        session = LiveTradingSession(
+            client=client, strategy=build_live_strategy(), agent=RuleBasedAgent(),
+            killswitch=killswitch, audit_log=audit, config=replace(config, pair=pairs[0]),
+        )
+        return AutonomousRunner(session)
+
+    # Multi-crypto : une session par paire, coupe-circuit et journal partagés.
+    sessions = {
+        pair: LiveTradingSession(
+            client=client, strategy=build_live_strategy(), agent=RuleBasedAgent(),
+            killswitch=killswitch, audit_log=audit, config=replace(config, pair=pair),
+        )
+        for pair in pairs
+    }
+    provider, mode = _build_sentiment_provider()
+    return PortfolioRunner(sessions, sentiment_provider=provider, sentiment_mode=mode)
 
 
 def main() -> None:
@@ -69,9 +113,14 @@ def main() -> None:
     interval = int(os.environ.get("AVONAM_TICK_SECONDS", 3600))
 
     banner = "LIVE_REAL (ordres réels)" if config.mode == LiveMode.LIVE_REAL else "SHADOW (à vide, aucun ordre réel)"
+    # Le PortfolioRunner (multi-crypto) expose ses paires ; l'AutonomousRunner
+    # (mono) expose sa paire unique via la config.
+    pairs_label = ", ".join(getattr(runner, "sessions", {})) or config.pair
+    mode_label = "multi-crypto" if hasattr(runner, "sessions") else "mono-crypto"
     print(f"=== AVONAM worker automatique — {banner} ===")
-    print(f"Paire {config.pair} · tick {interval}s · plafonds {config.max_notional_per_order_eur} €/ordre, "
-          f"{config.max_total_notional_eur} € cumulés, {config.max_trades_per_day} trades/jour\n", flush=True)
+    print(f"{mode_label} · paires {pairs_label} · tick {interval}s · plafonds "
+          f"{config.max_notional_per_order_eur} €/ordre, {config.max_position_eur} € de position max, "
+          f"{config.max_trades_per_day} trades/jour\n", flush=True)
 
     # Email au démarrage : tu sais que le robot est bien lancé.
     _try_alert(f"Robot démarré ({banner})", runner.summary_text())

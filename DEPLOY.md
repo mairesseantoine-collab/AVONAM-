@@ -188,6 +188,43 @@ plafonds (par ordre, position, cumulé, coupe-circuit) :
    worker repasse en logique de marché normale. `entry_now` n'est pas une
    stratégie de rendement, uniquement un test de la chaîne d'exécution.
 
+## Multi-crypto + sentiment (worker)
+
+Par défaut le worker suit une seule paire (`AVONAM_PAIR`). Pour scanner
+plusieurs cryptos et n'agir que sur le meilleur candidat à chaque cycle,
+définissez `AVONAM_PAIRS` (liste séparée par des virgules). Dès qu'il y a
+plus d'une paire, le worker passe en mode multi-crypto automatiquement.
+
+| Variable | Rôle | Exemple |
+|---|---|---|
+| `AVONAM_PAIRS` | Paires à scanner (active le multi-crypto) | `XBTEUR,ETHEUR,SOLEUR,ADAEUR,DOTEUR` |
+| `AVONAM_SENTIMENT_MODE` | `off`, `filter` (défaut), ou `tilt` | `filter` |
+| `AVONAM_SENTIMENT_SUBREDDITS` | Forums Reddit lus | `CryptoCurrency,CryptoMarkets` |
+
+Comment ça se comporte, à chaque cycle :
+1. **Ventes d'abord.** Toute position dont le signal technique est retombé
+   est proposée à la sortie (réduction du risque, jamais bloquée par un
+   plafond de taille).
+2. **Un seul achat au maximum.** Parmi les paires dont la stratégie donne un
+   signal d'achat et qui passent tous les plafonds, on garde les candidats,
+   on applique le filtre de sentiment, on classe par momentum, et on exécute
+   le meilleur. Tous les plafonds (par ordre, position par crypto, cumulé,
+   trades/jour, coupe-circuit) restent en vigueur.
+
+> ⚠️ **Le sentiment n'est pas un déclencheur.** Le sentiment brut de Reddit
+> est bruité et manipulable (campagnes de pump). Ici il ne crée jamais un
+> ordre et ne contourne jamais un plafond. En mode `filter`, il ne fait
+> qu'écarter un achat au sentiment franchement négatif et fiable. En mode
+> `tilt`, il ajoute en plus une légère préférence au classement. L'entrée
+> reste toujours décidée par le signal technique validé par backtest. Réseau :
+> le worker lit les pages publiques `.json` de Reddit (aucune clé requise) ;
+> une indisponibilité réseau retombe silencieusement sur « neutre » et ne
+> casse jamais le trading.
+
+Le plafond `AVONAM_MAX_POSITION_EUR` s'applique **par crypto** : avec 5
+paires et un plafond de 50 €, l'exposition totale possible est de 5 × 50 €.
+Ajustez `AVONAM_MAX_TOTAL_EUR` et `AVONAM_MAX_POSITION_EUR` en conséquence.
+
 ## Alertes email (optionnel)
 
 Pour être prévenu par email quand un vrai ordre est passé (ou quand le

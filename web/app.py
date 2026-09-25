@@ -312,13 +312,13 @@ def api_live_propose(_auth: bool = Depends(require_live_auth)) -> dict:
 def api_live_account(_auth: bool = Depends(require_live_auth)) -> dict:
     """État réel du compte Kraken, source de vérité quel que soit ce qui a
     passé les ordres (worker ou page). Lecture seule."""
-    from broker.live.session import _BASE_ASSET
+    from broker.live.assets import base_asset_for
 
     try:
         session, config = _build_live_session()
         client = session.client
         balances = {b.asset: b.amount for b in client.get_balance()}
-        base_asset = _BASE_ASSET.get(config.pair)
+        base_asset = base_asset_for(config.pair)
         base_amount = balances.get(base_asset, 0.0) if base_asset else 0.0
         last_price = float(client.get_ticker(config.pair)["c"][0])
         return {
