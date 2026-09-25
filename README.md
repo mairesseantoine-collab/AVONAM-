@@ -695,6 +695,54 @@ Aucune de ces étapes n'est une formalité : c'est précisément la séquence
 qui sépare « le code compile » de « je peux faire confiance à ce système
 avec mon argent ».
 
+### Trading réel avec confirmation manuelle (`broker/live/`)
+
+Le sous-package `broker/live/` implémente le trading réel avec des
+garde-fous stricts, dans la configuration « l'IA propose, l'humain
+confirme chaque ordre », avec des plafonds bas par défaut (~10 €/ordre,
+~30 €/jour, ~50 € cumulés).
+
+Trois conditions doivent être réunies EN MÊME TEMPS pour qu'un euro réel
+bouge, et il est impossible de les contourner par accident :
+
+1. **Mode `LIVE_REAL`** explicitement activé (`AVONAM_MODE=live_real`).
+   Le défaut est `SHADOW`, qui calcule et journalise les propositions mais
+   n'exécute jamais rien, quoi qu'il arrive.
+2. **Confirmation humaine explicite** : `confirm_and_execute(...,
+   human_confirmed=True)`. Aucune boucle ne peut enchaîner proposition →
+   exécution toute seule ; il faut un second appel, avec un drapeau qu'un
+   humain positionne après avoir lu la justification. La CLI
+   `examples/run_live_trading.py` matérialise ça en demandant de taper le
+   mot `EXECUTER`.
+3. **Les plafonds déterministes passent** (`TradingKillSwitch` + plafond
+   cumulé lu dans le journal d'audit, qui rend la limite des 50 € durable
+   même après un redémarrage).
+
+**Règle d'or de l'architecture** : la couche de risque déterministe est le
+patron, pas l'agent IA. L'agent (`broker/live/agent.py`) ne peut jamais
+*élargir* ce que le kill switch autorise, seulement rester dedans ou
+décider de ne rien faire. L'agent par défaut (`RuleBasedAgent`) est
+transparent et déterministe plutôt qu'un LLM : la logique d'entrée/sortie
+vient de la stratégie déjà backtestée, et un LLM décidant seul des ordres
+réels ajouterait de l'imprévisibilité sans edge démontré. L'interface
+`TradingAgent` reste ouverte pour brancher un agent LLM plus tard, sous la
+même règle d'or.
+
+Une **vente** (sortie de position) n'est jamais bloquée par le plafond de
+taille d'achat : sinon un stop-loss pourrait rester piégé, incapable de
+sortir. Les plafonds de notionnel s'appliquent aux achats (prise de
+risque), la whitelist de paires s'applique aux deux.
+
+**Où ça tourne** : `broker/live/` est conçu comme un outil LOCAL, lancé
+par l'utilisateur sur sa propre machine avec ses clés en variables
+d'environnement locales. Il ne doit pas être exposé derrière l'interface
+web publique (`web/app.py`), qui n'a aucune authentification — le modèle
+« confirmation humaine » perdrait tout son sens si n'importe quel visiteur
+pouvait confirmer un ordre. Un worker Render *autonome* serait l'autre
+architecture possible, mais elle suppose d'abandonner la confirmation
+manuelle : à n'envisager qu'après des semaines de validation, et pas dans
+cette étape.
+
 ## Prochaines étapes possibles
 
 - Connexion à une vraie API de données boursières (ex. Yahoo Finance) dans
