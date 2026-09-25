@@ -1,5 +1,7 @@
-# Image de l'interface web AVONAM (moteur de trading uniquement — le
-# module bank/ n'est pas exposé par web/app.py, voir son en-tête).
+# Image de l'interface web AVONAM. web/app.py utilise avonam/ (moteur de
+# trading) et les endpoints PUBLICS de broker/kraken/ (données de marché
+# en lecture seule, via common/) — jamais bank/ ni les endpoints privés de
+# broker/, voir l'en-tête de web/app.py.
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -8,6 +10,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY avonam ./avonam
+COPY broker ./broker
+COPY common ./common
 COPY web ./web
 COPY data ./data
 COPY pyproject.toml .
