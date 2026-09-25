@@ -289,6 +289,11 @@ def about() -> str:
     return _ABOUT_PAGE
 
 
+@app.get("/apprendre", response_class=HTMLResponse)
+def learn() -> str:
+    return _LEARN_PAGE
+
+
 @app.get("/live", response_class=HTMLResponse)
 def live_page(_auth: bool = Depends(require_live_auth)) -> str:
     return _LIVE_PAGE
@@ -508,6 +513,7 @@ _PAGE = """<!DOCTYPE html>
   </div>
   <nav>
     <a href="/" class="nav-active">Tableau de bord</a>
+    <a href="/apprendre">Apprendre</a>
     <a href="/a-propos">À propos</a>
     <a href="/live">Espace privé</a>
   </nav>
@@ -1033,6 +1039,7 @@ _LIVE_PAGE = """<!DOCTYPE html>
   </div>
   <nav>
     <a href="/">Tableau de bord</a>
+    <a href="/apprendre">Apprendre</a>
     <a href="/a-propos">À propos</a>
     <a href="/live" class="nav-active">Espace privé</a>
   </nav>
@@ -1218,6 +1225,7 @@ _ABOUT_PAGE = """<!DOCTYPE html>
   </div>
   <nav>
     <a href="/">Tableau de bord</a>
+    <a href="/apprendre">Apprendre</a>
     <a href="/a-propos" class="nav-active">À propos</a>
     <a href="/live">Espace privé</a>
   </nav>
@@ -1285,5 +1293,199 @@ _ABOUT_PAGE = """<!DOCTYPE html>
 
   <a class="back" href="/">← Retour au tableau de bord</a>
 </main>
+</body>
+</html>"""
+
+
+_LEARN_PAGE = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AVONAM — Apprendre le trading</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme:dark; --bg:#0e1117; --panel:#161b24; --panel-2:#0d1420; --border:#252c38; --text:#e9edf4; --muted:#8b96a8; --accent:#2a78d6; --accent-2:#3987e5; --good:#17c317; --critical:#e66767; --warn:#e9a64f; --good-bg:rgba(23,195,23,.1); --critical-bg:rgba(230,103,103,.1); --warn-bg:rgba(233,166,79,.1); }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
+  code { font-family:"IBM Plex Mono",monospace; background:var(--panel-2); padding:1px 5px; border-radius:4px; font-size:13px; }
+  header { padding:16px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; position:sticky; top:env(safe-area-inset-top,0px); background:rgba(14,17,23,.9); backdrop-filter:blur(8px); z-index:30; }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .brand .mark { width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,var(--accent),var(--accent-2)); display:grid; place-items:center; font-weight:700; color:#fff; font-size:17px; }
+  .brand h1 { margin:0; font-size:18px; } .brand .sub { margin:1px 0 0; color:var(--muted); font-size:11.5px; }
+  header nav { display:flex; gap:8px; flex-wrap:wrap; }
+  header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; white-space:nowrap; }
+  header nav a:hover { color:var(--text); border-color:var(--accent); }
+  header nav a.nav-active { color:var(--text); border-color:var(--accent); background:var(--panel); }
+
+  .wrap { max-width:1080px; margin:0 auto; padding:26px 16px 70px; display:grid; grid-template-columns:220px 1fr; gap:28px; }
+  @media (max-width:820px) { .wrap { grid-template-columns:1fr; } .toc { position:static !important; } }
+  .toc { position:sticky; top:80px; align-self:start; font-size:13px; }
+  .toc .t { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:600; margin-bottom:10px; }
+  .toc a { display:block; color:var(--muted); text-decoration:none; padding:5px 0; border-left:2px solid var(--border); padding-left:12px; }
+  .toc a:hover { color:var(--text); border-color:var(--accent); }
+
+  article { min-width:0; }
+  .lede { font-size:16px; line-height:1.6; color:var(--text); margin:0 0 8px; }
+  .sublede { color:var(--muted); font-size:14px; margin:0 0 8px; line-height:1.6; }
+  section { padding:26px 0; border-top:1px solid var(--border); }
+  section:first-of-type { border-top:none; }
+  h2 { font-size:19px; margin:0 0 14px; letter-spacing:-.01em; }
+  h3 { font-size:15px; margin:22px 0 8px; }
+  p, li { font-size:14.5px; line-height:1.7; color:#cdd5e1; }
+  ul { padding-left:20px; } li { margin-bottom:6px; }
+  b { color:var(--text); }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; margin:14px 0; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 15px; }
+  .card h4 { margin:0 0 6px; font-size:14px; }
+  .card p { margin:0; font-size:13px; color:var(--muted); line-height:1.55; }
+  .callout { border-radius:10px; padding:14px 16px; margin:16px 0; font-size:14px; line-height:1.6; border:1px solid var(--border); }
+  .callout.warn { background:var(--warn-bg); border-color:rgba(233,166,79,.3); }
+  .callout.danger { background:var(--critical-bg); border-color:rgba(230,103,103,.3); }
+  .callout.good { background:var(--good-bg); border-color:rgba(23,195,23,.3); }
+  .callout b { color:var(--text); }
+  table.gloss { width:100%; border-collapse:collapse; font-size:13.5px; margin-top:8px; }
+  table.gloss td { padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+  table.gloss td:first-child { color:var(--text); font-weight:600; white-space:nowrap; width:170px; }
+  table.gloss td:last-child { color:var(--muted); }
+  .cta { display:inline-block; margin-top:8px; color:var(--accent-2); text-decoration:none; font-weight:500; }
+  .cta:hover { text-decoration:underline; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="mark">A</div><div><h1>AVONAM</h1><p class="sub">Apprendre le trading</p></div></div>
+  <nav>
+    <a href="/">Tableau de bord</a>
+    <a href="/apprendre" class="nav-active">Apprendre</a>
+    <a href="/a-propos">À propos</a>
+    <a href="/live">Espace privé</a>
+  </nav>
+</header>
+
+<div class="wrap">
+  <aside class="toc">
+    <div class="t">Sommaire</div>
+    <a href="#intro">1. C'est quoi, trader ?</a>
+    <a href="#vocab">2. Le vocabulaire de base</a>
+    <a href="#risque">3. La gestion du risque</a>
+    <a href="#indics">4. Les indicateurs</a>
+    <a href="#modes">5. Backtest, paper, réel</a>
+    <a href="#frais">6. Les frais</a>
+    <a href="#psycho">7. La psychologie</a>
+    <a href="#verites">8. Les vérités qui dérangent</a>
+    <a href="#gloss">9. Glossaire</a>
+  </aside>
+
+  <article>
+    <p class="lede">Comprendre le trading, honnêtement, avant d'y mettre le moindre euro.</p>
+    <p class="sublede">Ce guide explique les bases en langage clair. Il ne promet aucune méthode pour gagner, parce qu'aucune n'existe de façon fiable. Son but est que tu saches ce que tu fais, et surtout ce que tu risques.</p>
+
+    <section id="intro">
+      <h2>1. C'est quoi, trader ?</h2>
+      <p>Trader, c'est acheter un actif (une action, une crypto, une matière première...) en espérant le revendre plus cher, ou l'inverse. Ton gain ou ta perte, c'est la différence entre le prix d'achat et le prix de vente, moins les frais.</p>
+      <p>À ne pas confondre avec <b>investir</b>. Investir, c'est acheter et garder longtemps (des mois, des années), en pariant sur la croissance de fond. Trader, c'est chercher à profiter des variations à court terme (minutes, heures, jours). Le trading court terme est beaucoup plus difficile et risqué : tu affrontes des professionnels, des robots, et les frais te grignotent à chaque aller-retour.</p>
+      <div class="callout warn"><b>À retenir.</b> Plus tu trades souvent, plus les frais s'accumulent et plus il est difficile de gagner. Le temps joue contre le trader hyperactif.</div>
+    </section>
+
+    <section id="vocab">
+      <h2>2. Le vocabulaire de base</h2>
+      <div class="cards">
+        <div class="card"><h4>Position</h4><p>Le fait de détenir un actif dans l'espoir d'un gain. « Ouvrir une position » = acheter ; « fermer » = revendre.</p></div>
+        <div class="card"><h4>Long / Short</h4><p>Long = tu paries que ça monte (tu achètes). Short = tu paries que ça baisse (plus risqué, on l'évite pour débuter).</p></div>
+        <div class="card"><h4>Ordre au marché</h4><p>Acheter/vendre tout de suite au prix actuel. Simple, mais tu subis le prix du moment.</p></div>
+        <div class="card"><h4>Ordre à cours limité</h4><p>Tu fixes un prix et l'ordre ne passe que s'il est atteint. Plus de contrôle, mais peut ne jamais s'exécuter.</p></div>
+        <div class="card"><h4>Spread</h4><p>L'écart entre le prix d'achat et de vente à un instant donné. Un coût caché, surtout sur les actifs peu échangés.</p></div>
+        <div class="card"><h4>Volatilité</h4><p>L'ampleur des variations de prix. Beaucoup de volatilité = plus d'opportunités, mais plus de risque.</p></div>
+      </div>
+    </section>
+
+    <section id="risque">
+      <h2>3. La gestion du risque, la seule chose vraiment sous ton contrôle</h2>
+      <p>Tu ne contrôles pas le marché. Tu contrôles combien tu risques. C'est <b>la</b> compétence qui sépare ceux qui survivent de ceux qui se ruinent. Un bon trader perdant en gestion du risque fait faillite ; un trader moyen avec une gestion du risque stricte tient.</p>
+      <h3>Les trois outils</h3>
+      <ul>
+        <li><b>Le stop-loss.</b> Un prix de sortie automatique en cas de perte, décidé à l'avance. Il t'empêche de « laisser courir » une perte en espérant que ça remonte, l'erreur classique qui vide les comptes.</li>
+        <li><b>Le take-profit.</b> Un prix de sortie automatique en cas de gain, pour sécuriser un profit avant qu'il ne s'évapore.</li>
+        <li><b>La taille de position.</b> Ne jamais risquer plus d'un petit pourcentage de ton capital sur un seul trade (souvent 1 %). Ainsi, même une longue série de pertes ne peut pas te ruiner.</li>
+      </ul>
+      <div class="callout danger"><b>La règle d'or.</b> Ne mets jamais en jeu de l'argent dont tu as besoin. On ne trade qu'avec une somme qu'on est prêt à perdre entièrement. C'est non négociable.</div>
+      <p>Ce logiciel applique ces trois outils automatiquement, avec en plus un « kill switch » qui arrête tout si les pertes dépassent un seuil. <a class="cta" href="/">Voir la gestion du risque en action sur le tableau de bord →</a></p>
+    </section>
+
+    <section id="indics">
+      <h2>4. Les indicateurs : des outils, pas des oracles</h2>
+      <p>Un indicateur est un calcul sur les prix passés, censé aider à décider. Ils sont utiles pour structurer une décision, mais aucun ne prédit l'avenir. Ils décrivent le passé.</p>
+      <h3>Les moyennes mobiles (SMA)</h3>
+      <p>La moyenne des prix sur les N dernières périodes, qui lisse le bruit et révèle la tendance. La stratégie classique : acheter quand une moyenne courte passe au-dessus d'une moyenne longue (la tendance devient haussière), vendre quand elle repasse en dessous. Efficace dans un marché qui a une vraie tendance, mauvaise dans un marché qui oscille.</p>
+      <h3>Le RSI</h3>
+      <p>Un chiffre de 0 à 100 qui mesure si un actif a beaucoup monté (surachat, > 70) ou beaucoup baissé (survente, < 30) récemment. Logique inverse des moyennes : on achète en survente en pariant sur un rebond. Efficace dans un marché sans tendance, mauvaise dans une tendance forte.</p>
+      <div class="callout warn"><b>Le piège.</b> Aucun indicateur ne marche tout le temps. Les moyennes et le RSI gagnent dans des marchés opposés. C'est pourquoi ce site te laisse les <a class="cta" href="/">comparer côte à côte →</a> plutôt que de te vendre « le bon ».</div>
+    </section>
+
+    <section id="modes">
+      <h2>5. Backtest, paper trading, trading réel</h2>
+      <div class="cards">
+        <div class="card"><h4>Backtest</h4><p>Rejouer une stratégie sur l'historique pour voir ce qu'elle aurait donné. Rapide, mais le passé ne garantit pas l'avenir, et il est facile de se leurrer en sur-optimisant.</p></div>
+        <div class="card"><h4>Paper trading</h4><p>Faire tourner la stratégie sur les vraies données actuelles, mais sans argent. La répétition générale indispensable, sur des semaines, avant tout réel.</p></div>
+        <div class="card"><h4>Trading réel</h4><p>De l'argent réel en jeu. À n'aborder qu'après un paper trading concluant, avec de petits montants et sous surveillance.</p></div>
+      </div>
+      <div class="callout good"><b>La bonne séquence.</b> Backtest → des semaines de paper trading sur données réelles → petit réel supervisé → montée progressive. Sauter une étape, c'est la meilleure façon de perdre son argent.</div>
+    </section>
+
+    <section id="frais">
+      <h2>6. Les frais, l'ennemi silencieux</h2>
+      <p>Chaque achat et chaque vente coûte des frais (souvent 0,1 à 0,3 % chez un exchange crypto). Un aller-retour coûte donc environ 0,5 %. Ça paraît minuscule, mais à petite taille et à force de trader, c'est décisif.</p>
+      <p>Exemple concret : si tu trades 10 € et que chaque aller-retour coûte 0,5 %, ta stratégie doit gagner <b>plus de 0,5 % à chaque fois juste pour ne rien perdre</b>. Beaucoup de stratégies simples n'y arrivent pas. Les frais transforment une stratégie « neutre » en stratégie perdante.</p>
+      <div class="callout warn"><b>À retenir.</b> Moins de trades, mais de meilleure qualité, bat souvent beaucoup de trades médiocres, uniquement à cause des frais.</div>
+    </section>
+
+    <section id="psycho">
+      <h2>7. La psychologie, là où la plupart échouent</h2>
+      <p>La technique est la partie facile. Le vrai adversaire, c'est toi. Les biais qui ruinent les traders :</p>
+      <ul>
+        <li><b>Laisser courir les pertes.</b> Refuser de vendre à perte en espérant un retour, jusqu'à ce que la petite perte devienne énorme.</li>
+        <li><b>Couper les gains trop tôt.</b> Vendre dès un petit profit par peur de le perdre, et rater les gros mouvements.</li>
+        <li><b>Le revenge trading.</b> Après une perte, vouloir « se refaire » en prenant plus de risques. La spirale.</li>
+        <li><b>Le FOMO.</b> Acheter en panique parce que « ça monte et je vais rater », souvent juste avant que ça retombe.</li>
+      </ul>
+      <p>C'est justement l'intérêt d'un système automatique avec des règles fixes : il applique la discipline que l'humain a du mal à tenir dans l'émotion. Mais il faut alors résister à l'envie de le débrancher au mauvais moment.</p>
+    </section>
+
+    <section id="verites">
+      <h2>8. Les vérités qui dérangent</h2>
+      <div class="callout danger">
+        <b>À lire deux fois.</b>
+        <ul style="margin:8px 0 0;">
+          <li>La grande majorité des traders particuliers <b>perdent de l'argent</b>. Ce n'est pas une opinion, c'est ce que montrent les études des régulateurs.</li>
+          <li>Il n'existe <b>aucune méthode, aucun robot, aucune IA</b> qui gagne de façon garantie. Quiconque te le promet cherche à te vendre quelque chose ou à te tromper.</li>
+          <li>Les gains passés ne prédisent <b>jamais</b> les gains futurs.</li>
+          <li>Ne trade jamais avec de l'argent emprunté, ni avec l'argent du quotidien.</li>
+          <li>Méfie-toi des promesses de rendements rapides et des « signaux » vendus en ligne : ce sont les arnaques les plus courantes.</li>
+        </ul>
+      </div>
+      <p>Ce site existe pour apprendre et expérimenter en sécurité, pas pour te faire croire à une machine à gagner. C'est précisément parce qu'il est honnête sur tout ça qu'on peut lui faire confiance pour le reste.</p>
+    </section>
+
+    <section id="gloss">
+      <h2>9. Glossaire express</h2>
+      <table class="gloss">
+        <tr><td>Actif</td><td>Ce qu'on achète/vend : une action, une crypto, une matière première...</td></tr>
+        <tr><td>Bougie (chandelier)</td><td>Un rectangle qui résume le prix sur une période (ouverture, plus haut, plus bas, clôture).</td></tr>
+        <tr><td>Drawdown</td><td>La chute du capital depuis son plus haut. Le chiffre le plus parlant du risque réel.</td></tr>
+        <tr><td>Effet de levier</td><td>Trader avec de l'argent emprunté pour amplifier les gains... et les pertes. À fuir pour débuter.</td></tr>
+        <tr><td>Liquidité</td><td>La facilité à acheter/vendre sans faire bouger le prix. Un actif peu liquide est dangereux.</td></tr>
+        <tr><td>Portefeuille</td><td>L'ensemble de tes positions et de ton cash.</td></tr>
+        <tr><td>Ratio de Sharpe</td><td>Le rendement rapporté au risque pris. Plus il est élevé, mieux c'est, mais fragile sur peu de données.</td></tr>
+        <tr><td>Slippage</td><td>L'écart entre le prix attendu et le prix réellement obtenu à l'exécution.</td></tr>
+        <tr><td>Win rate</td><td>Le pourcentage de trades gagnants. Peut être bas et rentable quand même si les gains sont plus gros que les pertes.</td></tr>
+      </table>
+    </section>
+
+    <p style="margin-top:26px;"><a class="cta" href="/">← Passer à la pratique sur le tableau de bord</a></p>
+  </article>
+</div>
 </body>
 </html>"""
