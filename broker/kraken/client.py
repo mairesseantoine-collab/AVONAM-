@@ -35,6 +35,20 @@ class KrakenClient:
         self.api_secret = api_secret
         self.base_url = base_url
 
+    # -- métadonnées de place de marché (voir broker/venue.py) ----------------
+    # Kraken est une place crypto, ouverte 24h/24, 7j/7. Un futur adaptateur
+    # actions/matières premières fournirait sa propre classe d'actifs et ses
+    # horaires réels via la même interface TradingVenue.
+    venue_name = "kraken"
+
+    @property
+    def asset_class(self):
+        from broker.venue import AssetClass
+        return AssetClass.CRYPTO
+
+    def is_market_open(self) -> bool:
+        return True
+
     # -- endpoints publics (pas d'authentification) --------------------------
 
     def get_ticker(self, pair: str) -> dict:

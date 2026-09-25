@@ -56,6 +56,14 @@ class AutonomousRunner:
             self.audit_log.log_event("autonomous_halted", {"reason": "coupe-circuit déclenché, reset manuel requis"})
             return TickResult(False, "Coupe-circuit déclenché : arrêt, intervention humaine requise.")
 
+        # Respect des horaires de marché : sans effet sur le crypto (ouvert
+        # 24h/24), essentiel pour une place d'actions/matières premières
+        # (voir broker/venue.py). La venue par défaut, si elle ne fournit pas
+        # is_market_open, est considérée ouverte.
+        is_open = getattr(self.session.client, "is_market_open", lambda: True)
+        if not is_open():
+            return TickResult(False, "Marché fermé (hors horaires de la place de marché).")
+
         executed_today = self._executed_today()
         if executed_today >= self.config.max_trades_per_day:
             return TickResult(False, f"Plafond de {self.config.max_trades_per_day} trades/jour atteint ({executed_today}).")

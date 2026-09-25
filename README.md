@@ -743,6 +743,39 @@ architecture possible, mais elle suppose d'abandonner la confirmation
 manuelle : à n'envisager qu'après des semaines de validation, et pas dans
 cette étape.
 
+## Étendre à d'autres classes d'actifs (actions, matières premières)
+
+L'architecture est prête à accueillir d'autres marchés que le crypto. La
+clé est l'abstraction `TradingVenue` (`broker/venue.py`) : tout le moteur
+de trading réel (`broker/live/`) ne dépend que de ce contrat, jamais
+directement de Kraken. Kraken en est le premier exemple
+(`KrakenClient`, classe d'actifs crypto, marché ouvert 24h/24).
+
+Pour ajouter les **actions** ou les **matières premières** :
+
+1. **Ouvrir un compte** chez un courtier qui expose une API et couvre ces
+   actifs — par exemple Alpaca ou Interactive Brokers pour les actions/ETF
+   américains, Interactive Brokers pour un large éventail de marchés dont
+   des matières premières (via contrats à terme). Kraken ne fait que le
+   crypto : c'est pour ça qu'un autre courtier est nécessaire, avec ses
+   propres clés et, souvent, des démarches réglementaires.
+2. **Écrire un adaptateur** qui respecte `TradingVenue` : les mêmes
+   méthodes que `KrakenClient` (`get_ohlc`, `get_ticker`, `get_balance`,
+   `add_order`, `get_open_orders`), plus `asset_class` et
+   `is_market_open()`. Ce dernier est important : une Bourse d'actions a
+   des horaires, contrairement au crypto ; le worker s'y tient déjà
+   automatiquement (`broker/live/autonomous.py`).
+3. **Rien d'autre à réécrire** : l'agent, le kill switch, les plafonds,
+   l'audit, la confirmation humaine, le worker et la page web fonctionnent
+   à l'identique sur la nouvelle place, parce qu'ils ne parlent qu'au
+   contrat `TradingVenue`.
+
+Autrement dit, le gros du travail structurel est fait. Ce qui reste, le
+jour venu, c'est le compte chez le courtier et son adaptateur, pas une
+refonte du système. Et les mêmes vérités s'appliquent : aucun de ces
+marchés n'offre de gain garanti, et chacun a ses propres frais, horaires
+et règles à respecter.
+
 ## Prochaines étapes possibles
 
 - Connexion à une vraie API de données boursières (ex. Yahoo Finance) dans
