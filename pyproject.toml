@@ -19,4 +19,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["avonam*", "bank*", "web*"]
+include = ["avonam*", "bank*", "web*", "broker*", "common*"]

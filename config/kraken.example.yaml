@@ -1,0 +1,28 @@
+# Configuration d'exemple pour le module broker/kraken — DRY-RUN PAR DÉFAUT.
+#
+# ⚠️ Avant de créer une vraie clé API sur kraken.com :
+#   1. Donnez-lui UNIQUEMENT les permissions "Query Funds", "Query Orders
+#      & Trades" et "Create & Modify Orders".
+#   2. NE COCHEZ JAMAIS "Withdraw Funds" — sans cette permission, une clé
+#      qui fuite permet au pire de passer des ordres, jamais de vider le
+#      compte vers une adresse externe.
+#   3. Ne mettez ni la clé ni le secret dans ce fichier : ils viennent de
+#      variables d'environnement (voir ci-dessous).
+
+kraken:
+  base_url: "https://api.kraken.com"
+  api_key_env_var: "KRAKEN_API_KEY"
+  api_secret_env_var: "KRAKEN_API_SECRET"
+
+killswitch:
+  allowed_pairs:
+    - "XBTEUR"   # BTC/EUR
+    - "ETHEUR"   # ETH/EUR
+  max_notional_per_order: 50.0    # en EUR — commencez petit
+  max_notional_per_day: 100.0
+  max_consecutive_failures: 3
+
+# Rappel (voir broker/__init__.py) : même avec cette config, aucun ordre
+# réel ne part tant que le code appelant ne passe pas explicitement
+# dry_run=False à LiveExecutionBridge.place_order(). La valeur par défaut
+# du projet est toujours dry_run=True.

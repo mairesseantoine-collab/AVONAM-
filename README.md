@@ -114,7 +114,22 @@ bank/         → module bancaire PSD2 (AIS/PIS, sandbox uniquement — voir
   consent/    → orchestration du consentement/SCA
   testing/    → faux ASPSP en mémoire (tests + démo, jamais en production)
 
-config/       → fichiers de configuration des stratégies et de la banque (YAML)
+broker/       → exécution réelle crypto (Kraken), dry-run par défaut — voir
+                plus bas. Séparé de avonam/ : la seule porte d'entrée est
+                broker/execution.py (LiveExecutionBridge).
+  kraken/     → client Kraken (auth, ticker/OHLC publics, ordres privés)
+  testing/    → faux Kraken en mémoire (tests + démo, jamais en production)
+  killswitch.py, execution.py → garde-fous avant tout ordre réel
+
+common/       → utilitaires partagés par bank/ et broker/ (transport HTTP
+                injectable, journal d'audit chaîné par hash) — rien de
+                spécifique à un domaine, avonam/ n'en dépend pas.
+
+web/          → interface web (FastAPI) pour visualiser le moteur avonam
+                dans un navigateur — n'expose jamais bank/ ni broker/.
+
+config/       → fichiers de configuration des stratégies, de la banque et
+                du broker (YAML)
 data/sample/  → données d'exemple (générées, pas de vraies données de marché)
 scripts/      → utilitaires (génération de données d'exemple)
 tests/        → tests unitaires (pytest)
@@ -560,22 +575,140 @@ donc pas de chemin de code qui puisse la sauter.
   temps à essayer de contourner cette limite technique côté banque, elle
   est imposée par leur infrastructure TLS, pas par ce code.
 
+## Exécution réelle crypto (module `broker/`, dry-run par défaut)
+
+Contrairement à `bank/` (qui ne fait que des virements PSD2 entre vos
+propres comptes), `broker/` parle directement à un exchange, Kraken, et
+peut réellement passer un ordre si on le lui demande explicitement. C'est
+le seul endroit du projet capable d'engager de l'argent réel — à ce titre,
+tout y est construit autour d'un principe unique : **`dry_run=True` partout
+par défaut**, à tous les niveaux, jamais un seul chemin de code qui
+l'outrepasse silencieusement.
+
+### PSD2 ne sert pas à trader
+
+Rappel important, déjà évoqué plus haut mais qui mérite d'être répété ici :
+PSD2 (le module `bank/`) permet de lire des comptes et de faire des
+virements, jamais de passer un ordre d'achat/vente. Pour exécuter un ordre
+réel, il faut un compte chez un courtier ou un exchange qui propose une
+API de trading — c'est un sujet entièrement différent, qui ne demande
+aucun agrément TPP ni certificat eIDAS : c'est l'exchange qui porte seul
+la responsabilité réglementaire de son service, vous n'avez qu'à respecter
+ses conditions d'utilisation en ouvrant un compte chez lui.
+
+### Pourquoi Kraken, et sa limite principale
+
+Kraken a été choisi pour le trading crypto : API REST bien documentée,
+accessible aux résidents belges, et des endpoints de marché publics
+(ticker, OHLC) qui ne demandent aucune clé API — pratique pour valider une
+stratégie sur de vraies données sans rien avoir à configurer.
+
+**Sa limite** : contrairement à un broker actions comme Interactive
+Brokers, Kraken n'offre pas d'environnement de paper trading officiel pour
+le spot. La validation se fait donc en trois étapes indépendantes, jamais
+une seule :
+
+1. **`broker/testing/fake_kraken.py`** valide que le *code* est correct
+   (signature des requêtes, parsing des réponses, format des ordres) sans
+   réseau ni clé API.
+2. **Le moteur `avonam` existant, alimenté par de vraies données de
+   marché Kraken** (`broker/kraken/market_data.py`, endpoint public en
+   lecture seule) valide la *stratégie* — backtest et paper trading
+   fonctionnent sans modification, puisque `get_ohlc()` retourne
+   exactement le format `open/high/low/close/volume` que le moteur attend
+   déjà.
+3. **Le paramètre `validate=true` de l'API Kraken elle-même**
+   (`KrakenClient.add_order(..., dry_run=True)`) valide que la *connexion*
+   et le *format des ordres* sont corrects, avec une vraie clé API, sans
+   jamais exécuter l'ordre.
+
+Ce n'est qu'après ces trois étapes, et avec des montants minimes, qu'un
+premier `dry_run=False` a du sens.
+
+### Architecture
+
+```
+broker/kraken/market_data.py  →  avonam/ (strategy, backtest, paper trading)
+        (données publiques,         (fonctionne SANS modification,
+         aucune clé requise)         même format DataFrame que le CSV)
+
+                    avonam/ (décision de trading)
+                              │
+                    broker/execution.py
+                    LiveExecutionBridge
+                              │
+                    broker/killswitch.py
+              (whitelist paires, plafonds, coupe-circuit)
+                              │
+                    broker/kraken/client.py
+              add_order(..., dry_run=True)  →  Kraken « validate »
+              add_order(..., dry_run=False) →  ordre RÉEL
+                              │
+                    common/audit_log.py
+              (même mécanisme que bank/, log append-only chaîné)
+```
+
+### Sécurité de la clé API (le point le plus important de cette section)
+
+Quand vous créerez une clé API sur kraken.com :
+
+- Donnez-lui uniquement « Query Funds », « Query Orders & Trades » et
+  « Create & Modify Orders ».
+- **Ne cochez jamais « Withdraw Funds »**. Sans cette permission, une clé
+  qui fuite permet au pire à quelqu'un de passer des ordres avec votre
+  argent (dans les limites du kill switch), jamais de vider le compte vers
+  une adresse externe. C'est la protection la plus efficace de toute cette
+  section, et elle ne coûte rien à mettre en place.
+- Clé et secret via variables d'environnement uniquement, jamais dans
+  `config/kraken.example.yaml` ni committés (voir ce fichier pour le détail).
+
+### Prototype et démo
+
+- `examples/run_kraken_paper_demo.py` : les trois étapes de validation
+  ci-dessus rejouées contre le faux Kraken, plus une démonstration du kill
+  switch qui bloque un ordre volontairement démesuré. Lancer avec
+  `python -m examples.run_kraken_paper_demo`.
+- `tests/test_broker_*.py` : 20 tests (client Kraken, kill switch,
+  bridge d'exécution, compatibilité des données de marché avec le moteur
+  `avonam`).
+- `config/kraken.example.yaml` : gabarit de configuration (paires
+  autorisées, plafonds de notionnel).
+
+### Avant d'envisager un premier ordre réel
+
+1. Ouvrir un compte Kraken, générer une clé API restreinte comme décrit
+   ci-dessus.
+2. Faire tourner `broker/kraken/market_data.py` en continu pendant
+   plusieurs semaines pour alimenter le paper trading `avonam` sur des
+   données *actuelles* (pas seulement l'historique déjà backtesté).
+3. Une fois les résultats jugés satisfaisants, appeler `add_order(...,
+   dry_run=True)` avec la vraie clé pendant encore quelques jours, pour
+   vérifier que rien ne coince côté format/connexion.
+4. Seulement alors, un premier `dry_run=False` avec un montant minimal
+   (quelques dizaines d'euros), sous la supervision directe d'un humain,
+   jamais laissé tourner seul dès le premier essai.
+5. Monter en montant progressivement, jamais par un facteur de plus de 2-3
+   à la fois, en resurveillant le kill switch et le journal d'audit à
+   chaque palier.
+
+Aucune de ces étapes n'est une formalité : c'est précisément la séquence
+qui sépare « le code compile » de « je peux faire confiance à ce système
+avec mon argent ».
+
 ## Prochaines étapes possibles
 
-- Connexion à une vraie API de données (ex. Yahoo Finance, Alpaca) dans
-  `avonam/data/loader.py`, derrière la même interface.
+- Connexion à une vraie API de données boursières (ex. Yahoo Finance) dans
+  `avonam/data/loader.py`, derrière la même interface, pour les actions/ETF.
 - Ajout d'une stratégie RSI ou breakout (implémenter `Strategy`).
-- Ajout d'une couche web (API + interface) pour rendre le projet
-  accessible depuis un navigateur, préalable à tout hébergement sur un
-  serveur accessible publiquement — voir la discussion à ce sujet dans
-  l'historique du projet ; c'est une étape à part entière (sécurité,
-  choix d'hébergeur, HTTPS) plutôt qu'un simple déploiement du code actuel.
 - Multi-actifs / portefeuille (actuellement : un seul actif à la fois).
-- Connexion à un vrai broker en mode paper trading de leur API (ex. Alpaca
-  paper account) avant d'envisager le direct.
+- Connexion à Interactive Brokers (actions/ETF/forex) sur le même principe
+  que `broker/kraken/`, avec leur environnement de paper trading officiel
+  cette fois, si vous préférez les actions à la crypto.
 - Inscription réelle sur le sandbox d'une banque belge (Belfius, KBC...)
-  pour valider `bank/` contre un vrai serveur, première étape concrète
-  vers la production décrite ci-dessus.
+  pour valider `bank/` contre un vrai serveur, si l'automatisation des
+  virements de financement vous intéresse un jour.
+- Ajout d'une authentification sur `web/app.py` avant d'y exposer autre
+  chose que le backtest en lecture seule (voir DEPLOY.md).
 
 Chaque étape suivante peut être développée et validée indépendamment,
 brique par brique, comme celle-ci.

@@ -21,9 +21,15 @@ from bank.psd2.ais import AISClient
 from bank.psd2.pis import PISClient
 from bank.security.token_store import EncryptedTokenStore
 from bank.testing.fake_aspsp import FakeASPSPTransport
+from broker.execution import LiveExecutionBridge
+from broker.killswitch import TradingKillSwitch
+from broker.kraken.client import KrakenClient
+from broker.testing.fake_kraken import FakeKrakenTransport
+from common.audit_log import AuditLog as CommonAuditLog
 
 DEBTOR_IBAN = "BE68539007547034"  # compte présent dans FakeASPSPTransport
 CREDITOR_IBAN = "BE71096123456769"
+KRAKEN_PAIR = "XBTEUR"
 
 
 @dataclass
@@ -91,6 +97,30 @@ def bank_stack(tmp_path) -> BankStack:
         killswitch=killswitch,
         bridge=bridge,
     )
+
+
+@dataclass
+class BrokerStack:
+    transport: FakeKrakenTransport
+    client: KrakenClient
+    audit_log: CommonAuditLog
+    killswitch: TradingKillSwitch
+    bridge: LiveExecutionBridge
+
+
+@pytest.fixture
+def broker_stack(tmp_path) -> BrokerStack:
+    transport = FakeKrakenTransport()
+    client = KrakenClient(transport, api_key="test-key", api_secret="dGVzdC1zZWNyZXQ=")
+    audit_log = CommonAuditLog(tmp_path / "broker_audit.log")
+    killswitch = TradingKillSwitch(
+        max_notional_per_order=500.0,
+        max_notional_per_day=1000.0,
+        allowed_pairs=[KRAKEN_PAIR],
+    )
+    bridge = LiveExecutionBridge(client=client, killswitch=killswitch, audit_log=audit_log)
+
+    return BrokerStack(transport=transport, client=client, audit_log=audit_log, killswitch=killswitch, bridge=bridge)
 
 
 def complete_oauth_flow(stack: BankStack, user_id: str, iban_scope: list[str]) -> str:
