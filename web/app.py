@@ -378,15 +378,32 @@ _PAGE = """<!DOCTYPE html>
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
   code, .mono, output, .value, td { font-family:"IBM Plex Mono",monospace; }
-  header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
-  header .titles h1 { margin:0; font-size:21px; letter-spacing:-.01em; }
-  header .titles p { margin:6px 0 0; color:var(--muted); font-size:13px; max-width:70ch; line-height:1.5; }
+  header { padding:16px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; position:sticky; top:env(safe-area-inset-top,0px); background:rgba(14,17,23,.88); backdrop-filter:blur(8px); z-index:30; }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .brand .mark { width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,var(--accent),var(--accent-2)); display:grid; place-items:center; font-weight:700; color:#fff; font-size:17px; flex-shrink:0; }
+  .brand h1 { margin:0; font-size:18px; letter-spacing:-.01em; }
+  .brand .sub { margin:1px 0 0; color:var(--muted); font-size:11.5px; }
   header nav { display:flex; gap:8px; flex-wrap:wrap; }
   header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; white-space:nowrap; }
   header nav a:hover { color:var(--text); border-color:var(--accent); }
   header nav a.nav-active { color:var(--text); border-color:var(--accent); background:var(--panel); }
   main { max-width:1080px; margin:0 auto; padding:22px 16px 60px; display:grid; gap:16px; }
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px; }
+  .section-title { font-size:12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.06em; margin:0 0 12px; }
+
+  /* -- bandeau de validation -- */
+  .validation { background:linear-gradient(180deg,var(--panel),var(--panel-2)); border:1px solid var(--border); border-radius:12px; padding:18px 20px; }
+  .validation h2 { margin:0 0 4px; font-size:15px; }
+  .validation .lead { color:var(--muted); font-size:13px; margin:0 0 14px; line-height:1.5; }
+  .steps-flow { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
+  .step { background:var(--panel-2); border:1px solid var(--border); border-radius:9px; padding:12px 13px; position:relative; }
+  .step .num { font-size:11px; font-weight:700; color:var(--accent-2); }
+  .step .st { font-weight:600; font-size:13px; margin:3px 0; }
+  .step .ds { font-size:12px; color:var(--muted); line-height:1.45; }
+  .step.now { border-color:var(--warn); }
+  .step.now .num { color:var(--warn); }
+  .step.danger { border-color:rgba(230,103,103,.35); }
+  .step.danger .num { color:var(--critical); }
 
   /* -- sélecteur de source (pills) -- */
   .pills { display:flex; gap:8px; flex-wrap:wrap; }
@@ -482,9 +499,12 @@ _PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <div class="titles">
-    <h1>AVONAM — Tableau de bord (simulation)</h1>
-    <p>Backtest et paper trading en direct, sur données d'exemple ou sur données Kraken réelles, avec explication de chaque chiffre affiché. Aucun ordre réel, aucune clé API, aucune connexion bancaire — voir « Comprendre ce tableau de bord » en bas de page.</p>
+  <div class="brand">
+    <div class="mark">A</div>
+    <div>
+      <h1>AVONAM</h1>
+      <p class="sub">Plateforme de trading algorithmique</p>
+    </div>
   </div>
   <nav>
     <a href="/" class="nav-active">Tableau de bord</a>
@@ -493,6 +513,17 @@ _PAGE = """<!DOCTYPE html>
   </nav>
 </header>
 <main>
+
+  <div class="validation">
+    <h2>Plan de validation avant tout ordre réel</h2>
+    <p class="lead">La discipline qui protège ton argent : rien de réel tant que la simulation n'a pas fait ses preuves sur plusieurs semaines. Chaque étape se franchit volontairement, dans l'ordre.</p>
+    <div class="steps-flow">
+      <div class="step"><div class="num">ÉTAPE 1</div><div class="st">Backtest</div><div class="ds">Comprendre et régler la stratégie sur l'historique, ici même.</div></div>
+      <div class="step now"><div class="num">ÉTAPE 2 · EN COURS</div><div class="st">Paper trading réel</div><div class="ds">Plusieurs semaines sur les vraies données Kraken, en mode observation (shadow), sans un euro engagé. On mesure.</div></div>
+      <div class="step"><div class="num">ÉTAPE 3</div><div class="st">Petit réel supervisé</div><div class="ds">Seulement si l'étape 2 convainc : premiers ordres à ~10 €, plafonnés à 50 €, sous ta surveillance.</div></div>
+      <div class="step danger"><div class="num">ÉTAPE 4</div><div class="st">Montée progressive</div><div class="ds">Jamais avant un vrai historique réel positif. Aucun gain n'est jamais garanti.</div></div>
+    </div>
+  </div>
 
   <div class="panel">
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Classe d'actifs</div>
@@ -960,7 +991,10 @@ _LIVE_PAGE = """<!DOCTYPE html>
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
   header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
-  header h1 { margin:0; font-size:20px; }
+  header h1 { margin:0; font-size:18px; }
+  header .sub { margin:1px 0 0; color:var(--muted); font-size:11.5px; }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .brand .mark { width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#3987e5); display:grid; place-items:center; font-weight:700; color:#fff; font-size:17px; flex-shrink:0; }
   header nav { display:flex; gap:8px; flex-wrap:wrap; }
   header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; }
   header nav a:hover { color:var(--text); border-color:var(--accent); }
@@ -993,7 +1027,10 @@ _LIVE_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>AVONAM — Trading réel (privé)</h1>
+  <div class="brand">
+    <div class="mark">A</div>
+    <div><h1>AVONAM</h1><p class="sub">Espace privé — trading réel</p></div>
+  </div>
   <nav>
     <a href="/">Tableau de bord</a>
     <a href="/a-propos">À propos</a>
@@ -1144,8 +1181,11 @@ _ABOUT_PAGE = """<!DOCTYPE html>
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
-  header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
-  header h1 { margin:0; font-size:21px; letter-spacing:-.01em; }
+  header { padding:16px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:18px; letter-spacing:-.01em; }
+  header .sub { margin:1px 0 0; color:var(--muted); font-size:11.5px; }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .brand .mark { width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#3987e5); display:grid; place-items:center; font-weight:700; color:#fff; font-size:17px; flex-shrink:0; }
   header nav { display:flex; gap:8px; flex-wrap:wrap; }
   header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; white-space:nowrap; }
   header nav a:hover { color:var(--text); border-color:var(--accent); }
@@ -1172,7 +1212,10 @@ _ABOUT_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>AVONAM — À propos</h1>
+  <div class="brand">
+    <div class="mark">A</div>
+    <div><h1>AVONAM</h1><p class="sub">À propos</p></div>
+  </div>
   <nav>
     <a href="/">Tableau de bord</a>
     <a href="/a-propos" class="nav-active">À propos</a>
