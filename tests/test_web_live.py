@@ -92,6 +92,38 @@ def test_live_disabled_without_password(monkeypatch, tmp_path):
     assert c.get("/live", auth=("user", "x")).status_code == 503
 
 
+def test_scan_report_endpoint(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    import broker.live.factory as factory
+    from broker.live.scanner import PortfolioRunner
+
+    monkeypatch.setenv("AVONAM_DASHBOARD_PASSWORD", PASSWORD)
+
+    transport = FakeKrakenTransport()
+    transport.balances["XXBT"] = 0.0
+    kclient = KrakenClient(transport, api_key="k", api_secret="c2VjcmV0")
+    audit = AuditLog(tmp_path / "scan.log")
+    ks = TradingKillSwitch(max_notional_per_order=12, max_notional_per_day=100, allowed_pairs=["XBTEUR", "ETHEUR"])
+    base = LiveTradingConfig(mode=LiveMode.SHADOW, max_total_notional_eur=100, max_position_eur=50)
+    sessions = {
+        p: LiveTradingSession(kclient, _Long(), RuleBasedAgent(), ks, audit, replace(base, pair=p))
+        for p in ["XBTEUR", "ETHEUR"]
+    }
+    runner = PortfolioRunner(sessions, sentiment_mode="off")
+    monkeypatch.setattr(factory, "build_runner", lambda: runner)
+
+    c = TestClient(webapp.app)
+    assert c.get("/api/live/scan").status_code == 401  # protégé
+    resp = c.get("/api/live/scan", auth=("user", PASSWORD))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["rows"]) == 2
+    assert "planned" in data
+    assert "market" in data
+    assert data["planned"]["kind"] in ("open", "close", "none")
+
+
 def test_execute_real_when_live_and_confirmed(monkeypatch, tmp_path):
     monkeypatch.setenv("AVONAM_DASHBOARD_PASSWORD", PASSWORD)
     monkeypatch.setattr(webapp, "_build_live_session", lambda: _make_session(tmp_path, LiveMode.LIVE_REAL))

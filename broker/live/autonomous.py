@@ -59,6 +59,34 @@ class AutonomousRunner:
             if e.event_type == "live_order_executed" and e.timestamp.startswith(today)
         )
 
+    def scan_report(self) -> dict:
+        """Analyse en lecture seule (mono-crypto), même forme que le
+        PortfolioRunner, pour un tableau de bord unifié."""
+        p = self.session.propose()
+        planned = {"kind": "none", "pair": None, "reason": p.decision.rationale}
+        if p.order is not None:
+            kind = "close" if p.decision.intent.startswith("close") else "open"
+            planned = {"kind": kind, "pair": self.config.pair, "intent": p.decision.intent,
+                       "notional_eur": p.estimated_notional_eur, "reason": p.decision.rationale}
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "mode": self.config.mode.value,
+            "sentiment_mode": "off",
+            "allow_short": self.config.allow_short,
+            "executed_today": self._executed_today(),
+            "max_trades_per_day": self.config.max_trades_per_day,
+            "market": {"bias": 0.0, "risk_off": False, "reasons": []},
+            "rows": [{
+                "pair": self.config.pair, "symbol": None,
+                "signal": p.decision.intent, "intent": p.decision.intent,
+                "momentum": round(p.momentum, 4), "sentiment": 0.0,
+                "sentiment_mentions": 0, "sentiment_reliable": False,
+                "last_price": round(p.last_price, 2), "allowed": p.allowed,
+                "block_reason": p.block_reason, "rationale": p.decision.rationale,
+            }],
+            "planned": planned,
+        }
+
     def summary_text(self) -> str:
         """Résumé lisible de l'activité du jour, pour l'email quotidien."""
         n = self._executed_today()

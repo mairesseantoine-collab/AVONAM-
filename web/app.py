@@ -299,11 +299,30 @@ def live_page(_auth: bool = Depends(require_live_auth)) -> str:
     return _LIVE_PAGE
 
 
+@app.get("/journal", response_class=HTMLResponse)
+def journal_page(_auth: bool = Depends(require_live_auth)) -> str:
+    return _SCAN_PAGE
+
+
 @app.get("/api/live/propose")
 def api_live_propose(_auth: bool = Depends(require_live_auth)) -> dict:
     try:
         session, config = _build_live_session()
         return _proposal_payload(session, config)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/live/scan")
+def api_live_scan(_auth: bool = Depends(require_live_auth)) -> dict:
+    """Scan EN LECTURE SEULE de toutes les paires configurées : ce que le robot
+    déciderait maintenant, avec le détail du signal, du momentum, du sentiment
+    et du contexte de marché. N'exécute aucun ordre. C'est le même câblage que
+    le worker (broker/live/factory), donc ce qui s'affiche ici est ce que le
+    worker ferait."""
+    try:
+        from broker.live.factory import build_runner
+        return build_runner().scan_report()
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -1040,8 +1059,8 @@ _LIVE_PAGE = """<!DOCTYPE html>
   <nav>
     <a href="/">Tableau de bord</a>
     <a href="/apprendre">Apprendre</a>
-    <a href="/a-propos">À propos</a>
     <a href="/live" class="nav-active">Espace privé</a>
+    <a href="/journal">Journal</a>
   </nav>
 </header>
 <main>
@@ -1165,6 +1184,159 @@ async function execute() {
 function refreshAll() { loadAccount(); loadProposal(); }
 refreshBtn.addEventListener('click', refreshAll);
 refreshAll();
+</script>
+</body>
+</html>"""
+
+
+_SCAN_PAGE = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AVONAM — Journal des décisions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme:dark; --bg:#0e1117; --panel:#161b24; --panel-2:#0d1420; --border:#252c38; --text:#e9edf4; --muted:#8b96a8; --accent:#2a78d6; --good:#17c317; --critical:#e66767; --warn:#e9a64f; --good-bg:rgba(23,195,23,.12); --critical-bg:rgba(230,103,103,.12); --warn-bg:rgba(233,166,79,.12); }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:"IBM Plex Sans",-apple-system,sans-serif; }
+  header { padding:22px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:18px; }
+  header .sub { margin:1px 0 0; color:var(--muted); font-size:11.5px; }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .brand .mark { width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#3987e5); display:grid; place-items:center; font-weight:700; color:#fff; font-size:17px; }
+  header nav { display:flex; gap:8px; flex-wrap:wrap; }
+  header nav a { color:var(--muted); text-decoration:none; font-size:13px; padding:7px 12px; border:1px solid var(--border); border-radius:7px; }
+  header nav a:hover { color:var(--text); border-color:var(--accent); }
+  header nav a.nav-active { color:var(--text); border-color:var(--accent); background:var(--panel); }
+  main { max-width:940px; margin:0 auto; padding:24px 16px 60px; display:grid; gap:16px; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px 20px; }
+  .panel h2 { margin:0 0 12px; font-size:14px; }
+  .planned { padding:14px 16px; border-radius:10px; font-size:14px; line-height:1.6; }
+  .planned.open { background:var(--good-bg); border:1px solid rgba(23,195,23,.3); }
+  .planned.close { background:var(--warn-bg); border:1px solid rgba(233,166,79,.3); }
+  .planned.none { background:var(--panel-2); border:1px solid var(--border); color:var(--muted); }
+  .pill { display:inline-block; padding:2px 9px; border-radius:20px; font-size:11.5px; font-weight:600; font-family:"IBM Plex Mono",monospace; }
+  .pill.riskoff { background:var(--critical-bg); color:var(--critical); } .pill.ok { background:var(--good-bg); color:var(--good); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; }
+  td.num { font-family:"IBM Plex Mono",monospace; text-align:right; }
+  .up { color:var(--good); } .down { color:var(--critical); } .muted { color:var(--muted); }
+  .tag { font-family:"IBM Plex Mono",monospace; font-size:12px; }
+  .tag.long { color:var(--good); } .tag.short { color:var(--warn); } .tag.wait { color:var(--muted); }
+  button { padding:9px 15px; border:none; border-radius:7px; font-weight:600; cursor:pointer; font-size:14px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); }
+  button:hover { border-color:var(--accent); }
+  .reasons { font-size:12.5px; color:var(--muted); margin-top:8px; line-height:1.6; }
+  .note { font-size:12px; color:var(--muted); line-height:1.6; }
+  .ts { font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="mark">A</div>
+    <div><h1>AVONAM</h1><p class="sub">Journal des décisions — lecture seule</p></div>
+  </div>
+  <nav>
+    <a href="/">Tableau de bord</a>
+    <a href="/apprendre">Apprendre</a>
+    <a href="/live">Espace privé</a>
+    <a href="/journal" class="nav-active">Journal</a>
+  </nav>
+</header>
+<main>
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+      <div><h2 style="margin:0;">Décision projetée du cycle</h2><div class="ts" id="ts">—</div></div>
+      <button id="refresh">Relancer un scan</button>
+    </div>
+    <div id="planned" class="planned none" style="margin-top:12px;">Chargement…</div>
+    <p class="note" id="config-note"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Contexte de marché <span id="market-pill"></span></h2>
+    <div id="market-reasons" class="reasons">—</div>
+  </div>
+
+  <div class="panel">
+    <h2>Détail par crypto</h2>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead><tr>
+          <th>Paire</th><th>Décision</th><th class="num">Prix</th><th class="num">Momentum 24h</th>
+          <th class="num">Sentiment</th><th>Autorisé</th><th>Motif</th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="7" class="muted">Chargement…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="note">Cette page lance un scan en direct à chaque rafraîchissement, exactement comme le worker, mais n'exécute aucun ordre. Le sentiment et le contexte de marché ne déclenchent jamais un ordre : ils filtrent et départagent seulement.</p>
+</main>
+<script>
+const intentLabel = { open_long:'Achat (long)', open_short:'Short', close_long:'Sortie long', close_short:'Rachat short', hold:'Attente' };
+const intentClass = { open_long:'long', open_short:'short', close_long:'wait', close_short:'wait', hold:'wait' };
+
+function pct(x) { return (x>=0?'+':'') + (x*100).toFixed(2) + '%'; }
+
+async function scan() {
+  const planned = document.getElementById('planned');
+  planned.className = 'planned none'; planned.textContent = 'Scan en cours…';
+  document.getElementById('rows').innerHTML = '<tr><td colspan="7" class="muted">Scan en cours…</td></tr>';
+  let data;
+  try { data = await (await fetch('/api/live/scan')).json(); }
+  catch (e) { planned.textContent = 'Erreur réseau : ' + e; return; }
+  if (data.error) { planned.textContent = 'Erreur : ' + data.error; return; }
+
+  document.getElementById('ts').textContent = 'Scan du ' + data.timestamp + ' (UTC)';
+  document.getElementById('config-note').textContent =
+    'Mode ' + data.mode + ' · sentiment ' + data.sentiment_mode + ' · shorts ' +
+    (data.allow_short ? 'activés' : 'désactivés') + ' · ' + data.executed_today + '/' +
+    data.max_trades_per_day + ' trades exécutés aujourd\\'hui.';
+
+  const p = data.planned || {};
+  planned.className = 'planned ' + (p.kind || 'none');
+  if (p.kind === 'open' || p.kind === 'close') {
+    const lbl = intentLabel[p.intent] || p.intent;
+    planned.innerHTML = '<b>' + lbl + ' sur ' + p.pair + '</b> (~' +
+      (p.notional_eur||0).toFixed(2) + ' €)<br>' + (p.reason||'');
+  } else {
+    planned.innerHTML = '<b>Aucune action ce cycle.</b><br>' + (p.reason||'');
+  }
+
+  const m = data.market || {};
+  document.getElementById('market-pill').innerHTML = m.risk_off
+    ? '<span class="pill riskoff">RISK-OFF</span>'
+    : '<span class="pill ok">ouvertures permises</span>';
+  const reasons = (m.reasons && m.reasons.length) ? m.reasons.map(r => '• ' + r).join('<br>') : 'Contexte neutre.';
+  document.getElementById('market-reasons').innerHTML =
+    'Biais contrarien : <b>' + (m.bias>=0?'+':'') + m.bias + '</b><br>' + reasons;
+
+  const rows = (data.rows||[]).map(r => {
+    const chosen = (p.pair === r.pair);
+    const momClass = r.momentum>=0 ? 'up' : 'down';
+    const sentClass = r.sentiment>0 ? 'up' : (r.sentiment<0 ? 'down' : 'muted');
+    const tag = intentClass[r.intent] || 'wait';
+    const sentTxt = r.sentiment.toFixed(2) + (r.sentiment_reliable ? '' : ' <span class="muted">(peu fiable)</span>');
+    return '<tr' + (chosen?' style="background:var(--good-bg);"':'') + '>' +
+      '<td><b>' + r.pair + '</b>' + (chosen?' ★':'') + '</td>' +
+      '<td class="tag ' + tag + '">' + (intentLabel[r.intent]||r.intent) + '</td>' +
+      '<td class="num">' + (r.last_price||0).toLocaleString('fr-FR') + '</td>' +
+      '<td class="num ' + momClass + '">' + pct(r.momentum) + '</td>' +
+      '<td class="num ' + sentClass + '">' + sentTxt + '</td>' +
+      '<td>' + (r.allowed ? '<span class="up">oui</span>' : '<span class="down">non</span>') + '</td>' +
+      '<td class="muted">' + (r.block_reason || '—') + '</td>' +
+    '</tr>';
+  }).join('');
+  document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" class="muted">Aucune paire configurée.</td></tr>';
+}
+
+document.getElementById('refresh').addEventListener('click', scan);
+scan();
 </script>
 </body>
 </html>"""

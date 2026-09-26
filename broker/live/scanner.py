@@ -113,6 +113,14 @@ class PortfolioRunner:
 
         # Une proposition par paire (chaque propose() ne fait que lire + journaliser).
         proposals = {pair: session.propose() for pair, session in self.sessions.items()}
+        market = self.market.evaluate()
+        scores = self._compute_scores(list(self.sessions))
+
+        # Récapitulatif complet du cycle, journalisé : quelle crypto pour quel
+        # motif, ce que disaient le sentiment et le contexte de marché. C'est ce
+        # que le tableau de bord et les logs affichent.
+        report = self._build_report(proposals, market, scores)
+        self.audit_log.log_event("scan_summary", report)
 
         # 1. Fermetures prioritaires (réduction du risque) : sortie de long OU
         #    rachat de couverture d'un short. Distinguées par l'intention, car
@@ -136,15 +144,13 @@ class PortfolioRunner:
         if not open_pairs:
             return TickResult(False, "Aucun candidat : aucune paire ne donne de signal d'ouverture exécutable.")
 
-        # Contexte de marché (une seule évaluation par cycle). Un risk_off
-        # (événement grave, euphorie extrême) suspend toute OUVERTURE ce cycle ;
-        # les fermetures ci-dessus ont déjà pu passer.
-        market = self.market.evaluate()
+        # Un risk_off (événement grave, euphorie extrême) suspend toute
+        # OUVERTURE ce cycle ; les fermetures ci-dessus ont déjà pu passer.
         if market.risk_off:
             self.audit_log.log_event("market_risk_off", {"bias": round(market.bias, 3), "reasons": market.reasons})
             return TickResult(False, f"Marché en risk-off, ouvertures suspendues : {'; '.join(market.reasons) or 'contexte défavorable'}.")
 
-        candidates = self._rank_opens(open_pairs, proposals)
+        candidates = self._rank_opens(open_pairs, proposals, scores)
         if not candidates:
             return TickResult(False, "Tous les candidats écartés par le filtre de sentiment.")
 
@@ -173,10 +179,19 @@ class PortfolioRunner:
 
     # -- classement + filtre de sentiment --------------------------------------
 
-    def _rank_opens(self, open_pairs: list[str], proposals) -> list[Candidate]:
+    def _compute_scores(self, pairs: list[str]) -> dict:
+        """Récupère les scores de sentiment pour les symboles des paires (un
+        seul appel réseau par source). Vide si le sentiment est désactivé."""
+        if self.sentiment_mode == "off":
+            return {}
+        symbols = {sentiment_symbol_for(p) for p in pairs}
+        wanted = sorted({s for s in symbols if s})
+        return self.sentiment.scores_for(wanted) if wanted else {}
+
+    def _rank_opens(self, open_pairs: list[str], proposals, scores: dict | None = None) -> list[Candidate]:
+        if scores is None:
+            scores = self._compute_scores(open_pairs)
         symbols = {pair: sentiment_symbol_for(pair) for pair in open_pairs}
-        wanted = sorted({s for s in symbols.values() if s})
-        scores = self.sentiment.scores_for(wanted) if (wanted and self.sentiment_mode != "off") else {}
 
         candidates: list[Candidate] = []
         for pair in open_pairs:
@@ -221,3 +236,77 @@ class PortfolioRunner:
             "pair": pair, "sens": sens, "sentiment": round(s_value, 3),
             "mentions": sent.mentions if sent else 0,
         })
+
+    # -- rapport lisible (journal + tableau de bord) ---------------------------
+
+    def scan_report(self) -> dict:
+        """Analyse EN LECTURE SEULE : ce que le robot déciderait maintenant, sans
+        rien exécuter. Interroge Kraken et les sources en direct. Renvoie un dict
+        JSON-able pour le tableau de bord."""
+        proposals = {pair: session.propose() for pair, session in self.sessions.items()}
+        market = self.market.evaluate()
+        scores = self._compute_scores(list(self.sessions))
+        return self._build_report(proposals, market, scores)
+
+    def _build_report(self, proposals, market, scores) -> dict:
+        """Construit le récapitulatif d'un cycle : une ligne par crypto (signal,
+        momentum, sentiment, autorisation) plus la décision projetée et le
+        contexte de marché. Ne modifie aucun état, n'exécute rien."""
+        rows = []
+        for pair, p in proposals.items():
+            symbol = sentiment_symbol_for(pair)
+            sent = scores.get(symbol) if symbol else None
+            rows.append({
+                "pair": pair,
+                "symbol": symbol,
+                "signal": p.decision.intent.replace("open_", "").replace("close_", "sortie ") if p.decision.intent != "hold" else "attente",
+                "intent": p.decision.intent,
+                "momentum": round(p.momentum, 4),
+                "sentiment": round(sent.score, 3) if sent else 0.0,
+                "sentiment_mentions": sent.mentions if sent else 0,
+                "sentiment_reliable": bool(sent and sent.is_reliable),
+                "last_price": round(p.last_price, 2),
+                "allowed": p.allowed,
+                "block_reason": p.block_reason,
+                "rationale": p.decision.rationale,
+            })
+
+        # Décision projetée, avec les mêmes règles que tick().
+        closes = [pair for pair, p in proposals.items() if p.order is not None and p.decision.intent in ("close_long", "close_short")]
+        open_pairs = [pair for pair, p in proposals.items() if p.order is not None and p.decision.intent in ("open_long", "open_short")]
+
+        if closes:
+            pair = closes[0]
+            planned = {"kind": "close", "pair": pair, "intent": proposals[pair].decision.intent,
+                       "notional_eur": proposals[pair].estimated_notional_eur,
+                       "reason": "Fermeture prioritaire (réduction du risque)."}
+        elif not open_pairs:
+            planned = {"kind": "none", "pair": None, "reason": "Aucun signal d'ouverture exploitable, on attend."}
+        elif market.risk_off:
+            planned = {"kind": "none", "pair": None,
+                       "reason": "Marché en risk-off : ouvertures suspendues ce cycle."}
+        else:
+            candidates = self._rank_opens(open_pairs, proposals, scores)
+            if not candidates:
+                planned = {"kind": "none", "pair": None, "reason": "Tous les candidats écartés par le filtre de sentiment."}
+            else:
+                best = candidates[0]
+                sens = "achat (long)" if best.intent == "open_long" else "vente à découvert (short)"
+                planned = {
+                    "kind": "open", "pair": best.pair, "intent": best.intent,
+                    "notional_eur": proposals[best.pair].estimated_notional_eur,
+                    "momentum": round(best.momentum, 4), "sentiment": round(best.sentiment, 3),
+                    "reason": f"Meilleur candidat pour une {sens} (classé par momentum{', ajusté du sentiment' if self.sentiment_mode == 'tilt' else ''}).",
+                }
+
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "mode": self.config.mode.value,
+            "sentiment_mode": self.sentiment_mode,
+            "allow_short": self.config.allow_short,
+            "executed_today": self._executed_today(),
+            "max_trades_per_day": self.config.max_trades_per_day,
+            "market": {"bias": round(market.bias, 3), "risk_off": market.risk_off, "reasons": market.reasons},
+            "rows": rows,
+            "planned": planned,
+        }
