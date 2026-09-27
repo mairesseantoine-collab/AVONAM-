@@ -25,6 +25,9 @@ Variables d'environnement lues :
     AVONAM_SENTIMENT_SUBREDDITS subreddits, ex. "CryptoCurrency,CryptoMarkets"
     AVONAM_USE_REDDIT / _COINGECKO / _FEARGREED / _NEWS   activer/désactiver
                                 chaque source (défaut : toutes activées).
+    AVONAM_MIN_TRADES_PER_DAY   plancher d'activité : au moins N ordres/jour,
+                                forcés si besoin (défaut 0 = signal uniquement).
+                                Ce n'est PAS une stratégie de rendement.
     AVONAM_ALLOW_SHORT          true pour autoriser la vente à découvert RÉELLE
                                 sur marge (levier). OFF par défaut. Le mode le
                                 plus risqué : risque de liquidation.

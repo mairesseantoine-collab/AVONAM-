@@ -126,7 +126,11 @@ class LiveTradingSession:
 
     # -- étape 1 : proposition (n'exécute jamais) ----------------------------
 
-    def propose(self) -> OrderProposal:
+    def propose(self, force_direction: str | None = None) -> OrderProposal:
+        """`force_direction` ('long' ou 'short') force une OUVERTURE même sans
+        signal technique, uniquement si la paire est à plat (ni long ni short) et
+        si les plafonds l'autorisent. C'est le plancher d'activité optionnel
+        (voir broker/live/scanner.py) ; il ne contourne aucun garde-fou."""
         data = self.client.get_ohlc(self.config.pair)
         signals = self.strategy.generate_signals(data)
         signal = int(signals.iloc[-1])
@@ -165,15 +169,31 @@ class LiveTradingSession:
         else:
             risk_reason = None
 
-        decision = self.agent.decide({
-            "signal": signal,
-            "holding": holding,
-            "risk_ok": risk_ok,
-            "risk_reason": risk_reason,
-            "last_price": last_price,
-            "short_open": short_open,
-            "allow_short": self.config.allow_short,
-        })
+        # Plancher d'activité : on force une ouverture SEULEMENT si la paire est
+        # à plat. Sur une position déjà ouverte, on laisse l'agent décider
+        # normalement (conserver ou fermer) — jamais empiler.
+        forced = force_direction in ("long", "short") and not holding and not short_open
+        if forced and force_direction == "short" and not self.config.allow_short:
+            forced = False  # pas de short forcé si les shorts sont désactivés
+
+        if forced:
+            intent = "open_long" if force_direction == "long" else "open_short"
+            decision = AgentDecision(
+                "buy" if intent == "open_long" else "sell", 0.3,
+                f"Ordre forcé (plancher d'activité) : ouverture {force_direction} sur momentum, "
+                f"sans signal technique. Reste borné par tous les plafonds.",
+                intent=intent,
+            )
+        else:
+            decision = self.agent.decide({
+                "signal": signal,
+                "holding": holding,
+                "risk_ok": risk_ok,
+                "risk_reason": risk_reason,
+                "last_price": last_price,
+                "short_open": short_open,
+                "allow_short": self.config.allow_short,
+            })
 
         order, estimated_notional = self._build_order(decision.intent, last_price, held_volume, short_volume)
 
@@ -190,6 +210,7 @@ class LiveTradingSession:
             "short_open": short_open,
             "action": decision.action,
             "intent": decision.intent,
+            "forced": forced,
             "leverage": order.leverage if order else None,
             "rationale": decision.rationale,
             "estimated_notional_eur": round(estimated_notional, 2),

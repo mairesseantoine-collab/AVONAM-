@@ -25,6 +25,7 @@ contourne jamais le coupe-circuit ni les plafonds.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -85,11 +86,14 @@ class PortfolioRunner:
         n = self._executed_today()
         pairs = ", ".join(self.sessions)
         shorts = f"activés (levier {self.config.leverage})" if self.config.allow_short else "désactivés"
+        floor = self.config.min_trades_per_day
+        floor_txt = f"{floor}/jour (forcés si besoin)" if floor > 0 else "aucun (signal uniquement)"
         return (
             f"Mode : {self.config.mode.value}\n"
             f"Paires scannées : {pairs}\n"
             f"Sentiment : {self.sentiment_mode}\n"
             f"Shorts : {shorts}\n"
+            f"Plancher d'activité : {floor_txt}\n"
             f"Ordres réels exécutés aujourd'hui : {n}\n"
             f"Plafonds : {self.config.max_notional_per_order_eur} €/ordre, "
             f"{self.config.max_position_eur} € d'exposition max par crypto.\n"
@@ -136,46 +140,116 @@ class PortfolioRunner:
                     )
                     return TickResult(True, f"Fermeture {pair} exécutée (~{proposal.estimated_notional_eur:.2f} €).", result)
 
-        # 2. Ouvertures : candidats techniques valides (long ou short).
-        open_pairs = [
-            pair for pair, p in proposals.items()
-            if p.order is not None and p.decision.intent in ("open_long", "open_short")
-        ]
-        if not open_pairs:
-            return TickResult(False, "Aucun candidat : aucune paire ne donne de signal d'ouverture exécutable.")
-
-        # Un risk_off (événement grave, euphorie extrême) suspend toute
-        # OUVERTURE ce cycle ; les fermetures ci-dessus ont déjà pu passer.
+        # Un risk_off (événement grave, euphorie extrême) suspend TOUTE
+        # ouverture ce cycle, y compris le plancher d'activité forcé ; les
+        # fermetures ci-dessus ont déjà pu passer.
         if market.risk_off:
             self.audit_log.log_event("market_risk_off", {"bias": round(market.bias, 3), "reasons": market.reasons})
             return TickResult(False, f"Marché en risk-off, ouvertures suspendues : {'; '.join(market.reasons) or 'contexte défavorable'}.")
 
-        candidates = self._rank_opens(open_pairs, proposals, scores)
-        if not candidates:
-            return TickResult(False, "Tous les candidats écartés par le filtre de sentiment.")
+        # 2. Ouvertures techniques : candidats dont la stratégie donne un signal.
+        open_pairs = [
+            pair for pair, p in proposals.items()
+            if p.order is not None and p.decision.intent in ("open_long", "open_short")
+        ]
+        candidates = self._rank_opens(open_pairs, proposals, scores) if open_pairs else []
+        if candidates:
+            return self._execute_open(candidates[0], proposals[candidates[0].pair])
 
-        best = candidates[0]
-        proposal = proposals[best.pair]
-        result = self.sessions[best.pair].confirm_and_execute(proposal, human_confirmed=True)
+        # 3. Aucune ouverture technique. Plancher d'activité optionnel : si l'on
+        # est en retard sur l'objectif du jour, on FORCE une entrée (momentum).
+        forced = self._maybe_forced_entry(proposals, scores)
+        if forced is not None:
+            candidate, proposal = forced
+            return self._execute_open(candidate, proposal, forced=True)
+
+        if open_pairs:
+            return TickResult(False, "Tous les candidats écartés par le filtre de sentiment.")
+        return TickResult(False, "Aucun candidat : aucune paire ne donne de signal d'ouverture exécutable.")
+
+    def _execute_open(self, candidate, proposal, forced: bool = False) -> TickResult:
+        result = self.sessions[candidate.pair].confirm_and_execute(proposal, human_confirmed=True)
         if result is None:
             reason = "garde-fou"
             entries = self.audit_log.read_all()
             if entries:
                 payload = entries[-1].payload
                 reason = payload.get("reason") or payload.get("error") or reason
-            return TickResult(False, f"Non exécuté ({best.pair}) — {reason}")
+            return TickResult(False, f"Non exécuté ({candidate.pair}) — {reason}")
 
-        sens = "achat (long)" if best.intent == "open_long" else "vente à découvert (short)"
+        sens = "achat (long)" if candidate.intent == "open_long" else "vente à découvert (short)"
+        tag = " [forcé, plancher d'activité]" if forced else ""
         _alert(
-            f"Ouverture {best.intent} exécutée ({best.pair})",
-            f"{sens} de ~{proposal.estimated_notional_eur:.2f} € sur {best.pair} "
-            f"(momentum {best.momentum:+.2%}, sentiment {best.sentiment:+.2f}, id {result.order_id}).",
+            f"Ouverture {candidate.intent} exécutée ({candidate.pair}){tag}",
+            f"{sens} de ~{proposal.estimated_notional_eur:.2f} € sur {candidate.pair} "
+            f"(momentum {candidate.momentum:+.2%}, sentiment {candidate.sentiment:+.2f}, id {result.order_id}).",
         )
         detail = (
-            f"Ouverture {best.intent} {best.pair} exécutée (~{proposal.estimated_notional_eur:.2f} €, "
-            f"momentum {best.momentum:+.2%}, sentiment {best.sentiment:+.2f})."
+            f"Ouverture {candidate.intent} {candidate.pair}{tag} exécutée "
+            f"(~{proposal.estimated_notional_eur:.2f} €, momentum {candidate.momentum:+.2%})."
         )
         return TickResult(True, detail, result)
+
+    # -- plancher d'activité (optionnel, hors logique de rendement) -------------
+
+    def _forced_target_now(self) -> int:
+        """Objectif d'ordres forcés atteint à cet instant de la journée, étalé
+        linéairement : à mi-journée on vise la moitié du plancher, etc. Évite de
+        tout déclencher d'un coup en début de journée."""
+        floor = self.config.min_trades_per_day
+        if floor <= 0:
+            return 0
+        now = datetime.now(timezone.utc)
+        elapsed = (now.hour * 60 + now.minute) / (24 * 60)
+        return min(floor, math.ceil(floor * elapsed))
+
+    def _maybe_forced_entry(self, proposals, scores):
+        """Retourne (Candidate, OrderProposal) à ouvrir de force si le plancher
+        d'activité est actif ET qu'on est en retard sur l'objectif du jour, sinon
+        None. Choisit la meilleure paire à plat par |momentum|, dans un sens
+        tradeable (long si momentum positif, short si négatif et shorts
+        autorisés), en respectant le filtre de sentiment et tous les plafonds."""
+        if self.config.min_trades_per_day <= 0:
+            return None
+        if self._executed_today() >= self._forced_target_now():
+            return None  # pas en retard : on n'force rien ce cycle
+
+        # Classement des candidats. Avec shorts autorisés, on suit le sens du
+        # momentum (long si positif, short si négatif) et on classe par sa
+        # force. Sans shorts, on ne peut qu'acheter : on force alors un long sur
+        # la paire au momentum le plus élevé (la moins faible), pour que le
+        # plancher demandé soit atteignable même en marché baissier.
+        if self.config.allow_short:
+            ranked = sorted(proposals, key=lambda p: abs(proposals[p].momentum), reverse=True)
+        else:
+            ranked = sorted(proposals, key=lambda p: proposals[p].momentum, reverse=True)
+
+        for pair in ranked:
+            mom = proposals[pair].momentum
+            direction = "short" if (self.config.allow_short and mom < 0) else "long"
+            if not self._sentiment_allows(pair, direction, scores):
+                continue
+            proposal = self.sessions[pair].propose(force_direction=direction)
+            if proposal.order is not None:  # à plat + plafonds OK
+                intent = "open_long" if direction == "long" else "open_short"
+                cand = Candidate(pair=pair, intent=intent, momentum=mom,
+                                 sentiment=0.0, sentiment_reliable=False, rank_score=abs(mom))
+                self.audit_log.log_event("forced_entry", {"pair": pair, "direction": direction,
+                                                           "momentum": round(mom, 4)})
+                return cand, proposal
+        return None
+
+    def _sentiment_allows(self, pair: str, direction: str, scores: dict) -> bool:
+        if self.sentiment_mode == "off":
+            return True
+        sent = scores.get(sentiment_symbol_for(pair))
+        if not sent or not sent.is_reliable:
+            return True
+        if direction == "long" and sent.score < self.veto_threshold:
+            return False
+        if direction == "short" and sent.score > -self.veto_threshold:
+            return False
+        return True
 
     # -- classement + filtre de sentiment --------------------------------------
 

@@ -30,6 +30,15 @@ class LiveTradingConfig:
     max_consecutive_failures: int = 3
     max_trades_per_day: int = 3            # garde-fou spécifique au mode automatique
 
+    # -- plancher d'activité (optionnel, hors logique de rendement) ------------
+    # 0 (défaut) = le robot n'agit que sur signal. > 0 = il FORCE au moins ce
+    # nombre d'entrées par jour, étalées sur la journée, même sans signal, en
+    # choisissant le meilleur candidat par momentum. Ce n'est PAS une stratégie
+    # de rendement : forcer des trades sans signal, c'est trader du bruit et
+    # payer des frais. Toutes les autres sécurités restent actives (plafonds,
+    # coupe-circuit, risk-off du marché, filtre de sentiment).
+    min_trades_per_day: int = 0
+
     # -- vente à découvert (short) sur marge, le mode le plus risqué ----------
     # OFF par défaut : même en LIVE_REAL, aucun short réel n'est passé tant
     # que allow_short n'est pas explicitement activé. Le levier ouvre un
@@ -47,6 +56,13 @@ class LiveTradingConfig:
             raise ValueError("Le plafond par ordre ne peut pas dépasser le plafond total.")
         if self.max_trades_per_day <= 0:
             raise ValueError("max_trades_per_day doit être strictement positif.")
+        if self.min_trades_per_day < 0:
+            raise ValueError("min_trades_per_day ne peut pas être négatif.")
+        if self.min_trades_per_day > self.max_trades_per_day:
+            raise ValueError(
+                f"min_trades_per_day ({self.min_trades_per_day}) ne peut pas dépasser "
+                f"max_trades_per_day ({self.max_trades_per_day})."
+            )
         if self.allow_short:
             if self.leverage < 2:
                 raise ValueError("leverage doit valoir au moins 2 pour un short sur marge.")
@@ -75,6 +91,7 @@ class LiveTradingConfig:
             max_total_notional_eur=_f("AVONAM_MAX_TOTAL_EUR", 50.0),
             max_position_eur=_f("AVONAM_MAX_POSITION_EUR", 50.0),
             max_trades_per_day=int(os.environ.get("AVONAM_MAX_TRADES_PER_DAY", 3)),
+            min_trades_per_day=int(os.environ.get("AVONAM_MIN_TRADES_PER_DAY", 0)),
             allow_short=_b("AVONAM_ALLOW_SHORT"),
             leverage=int(os.environ.get("AVONAM_LEVERAGE", 2)),
             max_leverage=int(os.environ.get("AVONAM_MAX_LEVERAGE", 3)),

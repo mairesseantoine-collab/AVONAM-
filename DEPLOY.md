@@ -240,6 +240,31 @@ Le plafond `AVONAM_MAX_POSITION_EUR` s'applique **par crypto** : avec 5
 paires et un plafond de 50 €, l'exposition totale possible est de 5 × 50 €.
 Ajustez `AVONAM_MAX_TOTAL_EUR` et `AVONAM_MAX_POSITION_EUR` en conséquence.
 
+## Plancher d'activité : forcer au moins N ordres par jour
+
+Par défaut, le robot n'agit que sur signal : certains jours, il ne trade pas,
+c'est normal et sain. Si tu veux garantir un minimum d'activité, définis
+`AVONAM_MIN_TRADES_PER_DAY`. Le robot force alors des entrées, étalées sur la
+journée, même sans signal technique, en choisissant le meilleur candidat par
+momentum.
+
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `AVONAM_MIN_TRADES_PER_DAY` | Nombre minimum d'ordres forcés par jour | `0` (désactivé) |
+
+Exemple pour au moins 3 ordres par jour : `AVONAM_MIN_TRADES_PER_DAY=3`
+(garde `AVONAM_MAX_TRADES_PER_DAY` ≥ 3).
+
+> ⚠️ **À lire, sans détour.** Forcer des trades n'est PAS une stratégie de
+> rendement, c'est l'inverse de la logique du robot. Un bon système attend un
+> signal ; forcer des entrées sans signal, c'est trader du bruit et payer des
+> frais à chaque fois. Ne confonds pas activité et performance. Cela dit, les
+> sécurités restent toutes actives : les entrées forcées respectent les
+> plafonds (par ordre, exposition, cumulé), le coupe-circuit, le risk-off du
+> marché (jamais d'entrée forcée en pleine tempête) et le filtre de sentiment.
+> Les entrées sont étalées : à mi-journée on vise la moitié du plancher, pas
+> tout d'un coup.
+
 ## Vente à découvert (shorts) sur marge — le mode le plus risqué
 
 Le robot peut ouvrir des positions à la baisse (shorts) sur la marge Kraken,
