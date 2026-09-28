@@ -96,6 +96,7 @@ class PortfolioRunner:
         if self.config.trailing_stop_pct > 0:
             risk_bits.append(f"suiveur {self.config.trailing_stop_pct:g}%")
         risk_txt = ", ".join(risk_bits) if risk_bits else "aucune sortie automatique"
+        exit_txt = "sur signal" if self.config.signal_exit else "tenue jusqu'aux stops"
         sshort = "activés" if self.config.sentiment_short else "désactivés"
         return (
             f"Mode : {self.config.mode.value}\n"
@@ -105,6 +106,7 @@ class PortfolioRunner:
             f"Shorts : {shorts}\n"
             f"Paris à la baisse sur sentiment : {sshort}\n"
             f"Gestion du risque : {risk_txt}\n"
+            f"Politique de sortie : {exit_txt}\n"
             f"Plancher d'activité : {floor_txt}\n"
             f"Ordres réels exécutés aujourd'hui : {n}\n"
             f"Plafonds : {self.config.max_notional_per_order_eur} €/ordre, "

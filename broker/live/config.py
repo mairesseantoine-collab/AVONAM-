@@ -58,6 +58,13 @@ class LiveTradingConfig:
     take_profit_pct: float = 0.0           # sortie si gain >= ce %
     trailing_stop_pct: float = 0.0         # sortie si repli >= ce % depuis le plus haut atteint
 
+    # Politique de sortie. True (défaut) : on ferme dès que le signal quitte le
+    # sens de la position (comportement historique). False : on TIENT la
+    # position, gérée uniquement par les stops ci-dessus (ou un signal OPPOSÉ),
+    # au lieu de la refermer sur un signal simplement plat. Évite les
+    # allers-retours des entrées forcées. Exige alors au moins un stop.
+    signal_exit: bool = True
+
     # Taille de position ajustée à la volatilité : plus une crypto est volatile,
     # plus la taille est réduite (jamais au-dessus du plafond par ordre).
     vol_target_pct: float = 0.0            # 0 = taille fixe (plafond) ; sinon volatilité cible
@@ -103,6 +110,12 @@ class LiveTradingConfig:
             )
         if self.sentiment_short and not self.allow_short:
             raise ValueError("sentiment_short exige allow_short=true (les shorts doivent être activés).")
+        if not self.signal_exit and max(self.stop_loss_pct, self.take_profit_pct, self.trailing_stop_pct) <= 0:
+            raise ValueError(
+                "signal_exit=false exige au moins un stop (stop_loss_pct, take_profit_pct ou "
+                "trailing_stop_pct) pour garantir une sortie, sinon une position pourrait rester "
+                "ouverte indéfiniment."
+            )
 
     @staticmethod
     def from_env() -> "LiveTradingConfig":
@@ -134,6 +147,7 @@ class LiveTradingConfig:
             stop_loss_pct=_f("AVONAM_STOP_LOSS_PCT", 0.0),
             take_profit_pct=_f("AVONAM_TAKE_PROFIT_PCT", 0.0),
             trailing_stop_pct=_f("AVONAM_TRAILING_STOP_PCT", 0.0),
+            signal_exit=os.environ.get("AVONAM_SIGNAL_EXIT", "true").strip().lower() not in ("0", "false", "no", "off"),
             vol_target_pct=_f("AVONAM_VOL_TARGET_PCT", 0.0),
             vol_lookback=int(os.environ.get("AVONAM_VOL_LOOKBACK", 24)),
             min_notional_eur=_f("AVONAM_MIN_ORDER_EUR", 5.0),

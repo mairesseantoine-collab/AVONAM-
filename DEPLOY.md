@@ -288,7 +288,19 @@ bloquée par un plafond de taille (sortir doit toujours être possible).
 | `AVONAM_MIN_ORDER_EUR` | Plancher de taille (min d'ordre Kraken) | `5` |
 
 Exemple prudent : `AVONAM_STOP_LOSS_PCT=5`, `AVONAM_TAKE_PROFIT_PCT=10`,
-`AVONAM_TRAILING_STOP_PCT=8`. La **taille ajustée à la volatilité** réduit
+`AVONAM_TRAILING_STOP_PCT=8`.
+
+**Politique de sortie (`AVONAM_SIGNAL_EXIT`).** Par défaut (`true`), une
+position est refermée dès que le signal technique quitte son sens. Problème :
+une entrée **forcée** (plancher d'activité) n'a pas de signal, elle est donc
+refermée au cycle suivant, ce qui crée des allers-retours qui paient des frais
+pour rien. Mets `AVONAM_SIGNAL_EXIT=false` pour TENIR les positions : elles ne
+sont alors gérées que par les stops ci-dessus (ou un signal opposé). Ce mode
+**exige au moins un stop** (sinon une position pourrait rester ouverte
+indéfiniment, et le worker refuse de démarrer). C'est le bon réglage si tu
+utilises le plancher d'activité ou l'intraday.
+
+La **taille ajustée à la volatilité** réduit
 automatiquement la mise sur les cryptos les plus agitées, sans jamais dépasser
 `AVONAM_MAX_ORDER_EUR` ni descendre sous `AVONAM_MIN_ORDER_EUR`.
 

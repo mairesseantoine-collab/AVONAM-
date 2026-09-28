@@ -57,21 +57,30 @@ class RuleBasedAgent:
         last_price = context["last_price"]
         short_open = context.get("short_open", False)   # True si un short est déjà ouvert
         allow_short = context.get("allow_short", False)  # True si les shorts sont autorisés
+        signal_exit = context.get("signal_exit", True)   # voir LiveTradingConfig.signal_exit
 
         # 1. FERMETURES d'abord (réduction d'exposition), jamais bloquées par
         # les plafonds d'ouverture : rester piégé serait pire.
-        if signal != 1 and holding:
+        #  - signal_exit=True  : on sort dès que le signal quitte le sens de la
+        #    position (signal plat suffit).
+        #  - signal_exit=False : on ne sort QUE sur un signal opposé ; un signal
+        #    plat laisse la position vivre, gérée par les stops (évite les
+        #    allers-retours des entrées forcées).
+        long_exit = (signal != 1) if signal_exit else (signal == -1)
+        short_exit = (signal != -1) if signal_exit else (signal == 1)
+
+        if holding and long_exit:
             return AgentDecision(
                 "sell", 0.6,
-                f"Le signal haussier a disparu (signal={signal}) alors qu'une position longue est "
-                f"ouverte : proposition de sortie au prix {last_price:.2f}.",
+                f"Sortie de position longue (signal={signal}, politique "
+                f"{'signal' if signal_exit else 'opposé'}) au prix {last_price:.2f}.",
                 intent="close_long",
             )
-        if allow_short and short_open and signal != -1:
+        if allow_short and short_open and short_exit:
             return AgentDecision(
                 "buy", 0.6,
-                f"Le signal baissier a disparu (signal={signal}) alors qu'un short est ouvert : "
-                f"proposition de rachat de couverture au prix {last_price:.2f}.",
+                f"Rachat de couverture du short (signal={signal}, politique "
+                f"{'signal' if signal_exit else 'opposé'}) au prix {last_price:.2f}.",
                 intent="close_short",
             )
 

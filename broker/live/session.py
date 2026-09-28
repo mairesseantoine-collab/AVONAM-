@@ -326,6 +326,7 @@ class LiveTradingSession:
                 "last_price": last_price,
                 "short_open": short_open,
                 "allow_short": self.config.allow_short,
+                "signal_exit": self.config.signal_exit,
             })
 
         open_notional = self._sized_notional(data)
