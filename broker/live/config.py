@@ -48,6 +48,27 @@ class LiveTradingConfig:
     leverage: int = 2                      # levier utilisé pour ouvrir un short
     max_leverage: int = 3                  # plafond dur : leverage ne peut le dépasser
 
+    # -- gestion du risque des positions ouvertes ------------------------------
+    # Appliqués aux positions RÉELLES, en plus du signal de la stratégie. Une
+    # sortie de risque (stop/objectif) est toujours prioritaire et jamais
+    # bloquée par un plafond de taille. Valeurs en POURCENTAGE (2.0 = 2 %).
+    # 0 = désactivé.
+    stop_loss_pct: float = 0.0             # sortie si perte >= ce %
+    take_profit_pct: float = 0.0           # sortie si gain >= ce %
+    trailing_stop_pct: float = 0.0         # sortie si repli >= ce % depuis le plus haut atteint
+
+    # Taille de position ajustée à la volatilité : plus une crypto est volatile,
+    # plus la taille est réduite (jamais au-dessus du plafond par ordre).
+    vol_target_pct: float = 0.0            # 0 = taille fixe (plafond) ; sinon volatilité cible
+    vol_lookback: int = 24                 # nb de barres pour estimer la volatilité
+    min_notional_eur: float = 5.0          # plancher de taille (min d'ordre Kraken)
+
+    # Paris à la baisse déclenchés par le sentiment / la peur (opt-in). Quand
+    # activé (et allow_short), un sentiment franchement négatif OU une peur
+    # extrême du marché ouvre un short, même sans signal technique baissier.
+    sentiment_short: bool = False
+    sentiment_short_threshold: float = -0.5  # score de sentiment en dessous duquel on parie à la baisse
+
     def __post_init__(self) -> None:
         for name in ("max_notional_per_order_eur", "max_notional_per_day_eur", "max_total_notional_eur", "max_position_eur"):
             if getattr(self, name) <= 0:
@@ -68,6 +89,13 @@ class LiveTradingConfig:
                 raise ValueError("leverage doit valoir au moins 2 pour un short sur marge.")
             if self.leverage > self.max_leverage:
                 raise ValueError(f"leverage ({self.leverage}) dépasse le plafond max_leverage ({self.max_leverage}).")
+        for name in ("stop_loss_pct", "take_profit_pct", "trailing_stop_pct", "vol_target_pct"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} ne peut pas être négatif.")
+        if self.min_notional_eur <= 0:
+            raise ValueError("min_notional_eur doit être strictement positif.")
+        if self.sentiment_short and not self.allow_short:
+            raise ValueError("sentiment_short exige allow_short=true (les shorts doivent être activés).")
 
     @staticmethod
     def from_env() -> "LiveTradingConfig":
@@ -95,4 +123,12 @@ class LiveTradingConfig:
             allow_short=_b("AVONAM_ALLOW_SHORT"),
             leverage=int(os.environ.get("AVONAM_LEVERAGE", 2)),
             max_leverage=int(os.environ.get("AVONAM_MAX_LEVERAGE", 3)),
+            stop_loss_pct=_f("AVONAM_STOP_LOSS_PCT", 0.0),
+            take_profit_pct=_f("AVONAM_TAKE_PROFIT_PCT", 0.0),
+            trailing_stop_pct=_f("AVONAM_TRAILING_STOP_PCT", 0.0),
+            vol_target_pct=_f("AVONAM_VOL_TARGET_PCT", 0.0),
+            vol_lookback=int(os.environ.get("AVONAM_VOL_LOOKBACK", 24)),
+            min_notional_eur=_f("AVONAM_MIN_ORDER_EUR", 5.0),
+            sentiment_short=_b("AVONAM_SENTIMENT_SHORT"),
+            sentiment_short_threshold=_f("AVONAM_SENTIMENT_SHORT_THRESHOLD", -0.5),
         )

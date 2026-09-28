@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pandas as pd
+
 from broker.killswitch import TradingKillSwitch
 from broker.kraken.client import KrakenClient
 from broker.live.agent import AgentDecision, TradingAgent
@@ -124,6 +126,127 @@ class LiveTradingSession:
                 total += float(payload.get("notional_eur", 0.0))
         return total
 
+    # -- gestion du risque des positions ------------------------------------
+
+    def _long_entry(self):
+        """Rejoue le journal d'audit pour retrouver le prix d'entrée moyen et
+        l'horodatage de la position longue actuellement ouverte sur la paire.
+        Retourne (prix_entrée, horodatage_iso) ou None si aucune position (ou
+        journal indisponible, ex. disque éphémère réinitialisé)."""
+        vol = 0.0
+        cost = 0.0
+        entry_time = None
+        for e in self.audit_log.read_all():
+            if e.event_type != "live_order_executed":
+                continue
+            p = e.payload
+            if p.get("pair") != self.config.pair:
+                continue
+            intent = p.get("intent") or ("open_long" if p.get("side") == "buy" else "close_long")
+            n = float(p.get("notional_eur", 0.0))
+            v = float(p.get("volume", 0.0))
+            if intent == "open_long":
+                if vol <= _DUST:
+                    entry_time = e.timestamp
+                vol += v
+                cost += n
+            elif intent == "close_long" and vol > _DUST:
+                frac = min(v, vol) / vol
+                cost -= cost * frac
+                vol -= v
+                if vol <= _DUST:
+                    vol, cost, entry_time = 0.0, 0.0, None
+        if vol <= _DUST or cost <= 0:
+            return None
+        return cost / vol, entry_time
+
+    def _short_entry_price(self):
+        """Prix d'entrée moyen du short ouvert, lu sur Kraken (OpenPositions :
+        cost / vol). None si aucun short ou lecture impossible."""
+        try:
+            tv = tc = 0.0
+            for pos in self.client.get_open_positions():
+                if pos.get("pair") == self.config.pair and pos.get("type") == "sell":
+                    tv += float(pos.get("volume", 0.0))
+                    tc += float(pos.get("cost", 0.0))
+            return (tc / tv) if tv > _DUST and tc > 0 else None
+        except Exception:
+            return None
+
+    def _volatility(self, data) -> float:
+        """Volatilité récente = écart-type des rendements sur `vol_lookback`
+        barres, en fraction (0.02 = 2 %)."""
+        rets = data["close"].astype(float).pct_change().dropna()
+        n = min(self.config.vol_lookback, len(rets))
+        if n < 2:
+            return 0.0
+        return float(rets.iloc[-n:].std())
+
+    def _sized_notional(self, data) -> float:
+        """Taille d'ordre ajustée à la volatilité : plus c'est volatil, plus la
+        taille est réduite, sans jamais dépasser le plafond par ordre ni
+        descendre sous le plancher (min d'ordre Kraken)."""
+        cap = self.config.max_notional_per_order_eur
+        if self.config.vol_target_pct <= 0:
+            return cap
+        vol = self._volatility(data)
+        if vol <= 0:
+            return cap
+        target = self.config.vol_target_pct / 100.0
+        notional = min(cap * (target / vol), cap)
+        notional = max(notional, self.config.min_notional_eur)
+        return min(notional, cap)
+
+    def _extremum_since(self, data, etime, kind: str) -> float:
+        col = "high" if kind == "max" else "low"
+        sub = data
+        if etime:
+            try:
+                t = pd.Timestamp(etime)
+                if t.tzinfo is not None:
+                    t = t.tz_convert(None)
+                filtered = data[data.index >= t]
+                if len(filtered) > 0:
+                    sub = filtered
+            except Exception:
+                sub = data
+        return float(sub[col].max() if kind == "max" else sub[col].min())
+
+    def _risk_exit(self, data, last_price, holding, short_open):
+        """Vérifie stop-loss / take-profit / stop suiveur sur la position
+        ouverte. Retourne (intent, raison) si une sortie s'impose, sinon
+        (None, None). Priorité absolue : une sortie de risque passe avant tout."""
+        sl = self.config.stop_loss_pct / 100.0
+        tp = self.config.take_profit_pct / 100.0
+        tr = self.config.trailing_stop_pct / 100.0
+        if sl <= 0 and tp <= 0 and tr <= 0:
+            return None, None
+
+        eps = 1e-9  # tolérance flottante pour ne pas rater un seuil pile atteint
+        if holding:
+            info = self._long_entry()
+            if info:
+                entry, etime = info
+                pnl = last_price / entry - 1.0
+                if tp > 0 and pnl >= tp - eps:
+                    return "close_long", f"take-profit long (+{pnl*100:.2f} %)"
+                if sl > 0 and pnl <= -sl + eps:
+                    return "close_long", f"stop-loss long ({pnl*100:.2f} %)"
+                if tr > 0:
+                    peak = self._extremum_since(data, etime, "max")
+                    if peak > 0 and (last_price / peak - 1.0) <= -tr + eps:
+                        return "close_long", f"stop suiveur long (repli {(last_price/peak-1)*100:.2f} % depuis le plus haut)"
+
+        if short_open:
+            entry = self._short_entry_price()
+            if entry:
+                pnl = entry / last_price - 1.0  # un short gagne quand le prix baisse
+                if tp > 0 and pnl >= tp - eps:
+                    return "close_short", f"take-profit short (+{pnl*100:.2f} %)"
+                if sl > 0 and pnl <= -sl + eps:
+                    return "close_short", f"stop-loss short ({pnl*100:.2f} %)"
+        return None, None
+
     # -- étape 1 : proposition (n'exécute jamais) ----------------------------
 
     def propose(self, force_direction: str | None = None) -> OrderProposal:
@@ -169,6 +292,10 @@ class LiveTradingSession:
         else:
             risk_reason = None
 
+        # PRIORITÉ ABSOLUE : une sortie de risque (stop-loss / take-profit /
+        # stop suiveur) sur une position ouverte passe avant tout le reste.
+        risk_intent, risk_exit_reason = self._risk_exit(data, last_price, holding, short_open)
+
         # Plancher d'activité : on force une ouverture SEULEMENT si la paire est
         # à plat. Sur une position déjà ouverte, on laisse l'agent décider
         # normalement (conserver ou fermer) — jamais empiler.
@@ -176,7 +303,13 @@ class LiveTradingSession:
         if forced and force_direction == "short" and not self.config.allow_short:
             forced = False  # pas de short forcé si les shorts sont désactivés
 
-        if forced:
+        if risk_intent:
+            decision = AgentDecision(
+                "sell" if risk_intent == "close_long" else "buy", 0.95,
+                f"Sortie de risque : {risk_exit_reason}.",
+                intent=risk_intent,
+            )
+        elif forced:
             intent = "open_long" if force_direction == "long" else "open_short"
             decision = AgentDecision(
                 "buy" if intent == "open_long" else "sell", 0.3,
@@ -195,7 +328,10 @@ class LiveTradingSession:
                 "allow_short": self.config.allow_short,
             })
 
-        order, estimated_notional = self._build_order(decision.intent, last_price, held_volume, short_volume)
+        open_notional = self._sized_notional(data)
+        order, estimated_notional = self._build_order(
+            decision.intent, last_price, held_volume, short_volume, open_notional
+        )
 
         # Les OUVERTURES (open_long, open_short) augmentent l'exposition : elles
         # passent tous les plafonds. Les FERMETURES (close_long, close_short)
@@ -228,11 +364,14 @@ class LiveTradingSession:
             momentum=momentum,
         )
 
-    def _build_order(self, intent: str, last_price: float, held_volume: float, short_volume: float):
+    def _build_order(self, intent: str, last_price: float, held_volume: float, short_volume: float,
+                     open_notional: float | None = None):
         """Construit l'ordre correspondant à l'intention de l'agent, avec le
-        levier pour les opérations de marge (short). Retourne (order, notionnel
-        estimé). Une intention 'hold' ou une taille nulle donne (None, 0)."""
-        per_order_eur = self.config.max_notional_per_order_eur
+        levier pour les opérations de marge (short). `open_notional` est la
+        taille (ajustée à la volatilité) des ouvertures ; par défaut le plafond
+        par ordre. Retourne (order, notionnel estimé). Une intention 'hold' ou
+        une taille nulle donne (None, 0)."""
+        per_order_eur = open_notional if open_notional is not None else self.config.max_notional_per_order_eur
         lev = self.config.leverage
 
         if intent == "open_long":

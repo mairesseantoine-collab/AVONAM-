@@ -33,6 +33,13 @@ Variables d'environnement lues :
                                 plus risqué : risque de liquidation.
     AVONAM_LEVERAGE             levier des shorts (défaut 2, plafonné par
                                 AVONAM_MAX_LEVERAGE, défaut 3).
+    AVONAM_SENTIMENT_SHORT      true pour que le sentiment franchement négatif
+                                déclenche un pari à la baisse (short). Exige
+                                AVONAM_ALLOW_SHORT. Seuil : AVONAM_SENTIMENT_SHORT_THRESHOLD (-0.5).
+    AVONAM_STOP_LOSS_PCT, AVONAM_TAKE_PROFIT_PCT, AVONAM_TRAILING_STOP_PCT
+                                gestion du risque des positions, en % (0 = off).
+    AVONAM_VOL_TARGET_PCT       taille ajustée à la volatilité (0 = taille fixe).
+                                AVONAM_VOL_LOOKBACK (24), AVONAM_MIN_ORDER_EUR (5).
     AVONAM_TICK_SECONDS         intervalle entre deux cycles (défaut 3600)
     KRAKEN_API_KEY / _SECRET    clé restreinte (jamais « Withdraw »)
     AVONAM_MAX_ORDER_EUR, AVONAM_MAX_DAY_EUR, AVONAM_MAX_TOTAL_EUR,

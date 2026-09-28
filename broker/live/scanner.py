@@ -88,11 +88,22 @@ class PortfolioRunner:
         shorts = f"activés (levier {self.config.leverage})" if self.config.allow_short else "désactivés"
         floor = self.config.min_trades_per_day
         floor_txt = f"{floor}/jour (forcés si besoin)" if floor > 0 else "aucun (signal uniquement)"
+        risk_bits = []
+        if self.config.stop_loss_pct > 0:
+            risk_bits.append(f"stop -{self.config.stop_loss_pct:g}%")
+        if self.config.take_profit_pct > 0:
+            risk_bits.append(f"objectif +{self.config.take_profit_pct:g}%")
+        if self.config.trailing_stop_pct > 0:
+            risk_bits.append(f"suiveur {self.config.trailing_stop_pct:g}%")
+        risk_txt = ", ".join(risk_bits) if risk_bits else "aucune sortie automatique"
+        sshort = "activés" if self.config.sentiment_short else "désactivés"
         return (
             f"Mode : {self.config.mode.value}\n"
             f"Paires scannées : {pairs}\n"
             f"Sentiment : {self.sentiment_mode}\n"
             f"Shorts : {shorts}\n"
+            f"Paris à la baisse sur sentiment : {sshort}\n"
+            f"Gestion du risque : {risk_txt}\n"
             f"Plancher d'activité : {floor_txt}\n"
             f"Ordres réels exécutés aujourd'hui : {n}\n"
             f"Plafonds : {self.config.max_notional_per_order_eur} €/ordre, "
@@ -156,7 +167,15 @@ class PortfolioRunner:
         if candidates:
             return self._execute_open(candidates[0], proposals[candidates[0].pair])
 
-        # 3. Aucune ouverture technique. Plancher d'activité optionnel : si l'on
+        # 3. Pari à la baisse déclenché par le sentiment / la peur (opt-in) :
+        # un sentiment franchement négatif ouvre un short, même sans signal
+        # technique baissier.
+        sshort = self._maybe_sentiment_short(proposals, scores)
+        if sshort is not None:
+            candidate, proposal = sshort
+            return self._execute_open(candidate, proposal)
+
+        # 4. Aucune ouverture technique. Plancher d'activité optionnel : si l'on
         # est en retard sur l'objectif du jour, on FORCE une entrée (momentum).
         forced = self._maybe_forced_entry(proposals, scores)
         if forced is not None:
@@ -236,6 +255,34 @@ class PortfolioRunner:
                                  sentiment=0.0, sentiment_reliable=False, rank_score=abs(mom))
                 self.audit_log.log_event("forced_entry", {"pair": pair, "direction": direction,
                                                            "momentum": round(mom, 4)})
+                return cand, proposal
+        return None
+
+    def _maybe_sentiment_short(self, proposals, scores):
+        """Pari à la baisse déclenché par le sentiment (opt-in). Si un symbole a
+        un sentiment fiable et franchement négatif (≤ seuil), ouvre un short sur
+        la paire la plus négative encore à plat. Retourne (Candidate, proposal)
+        ou None. Exige sentiment_short + allow_short + sentiment actif."""
+        if not (self.config.sentiment_short and self.config.allow_short):
+            return None
+        if self.sentiment_mode == "off":
+            return None
+        threshold = self.config.sentiment_short_threshold
+
+        negatives = []
+        for pair in self.sessions:
+            sent = scores.get(sentiment_symbol_for(pair))
+            if sent and sent.is_reliable and sent.score <= threshold:
+                negatives.append((pair, sent.score))
+        negatives.sort(key=lambda x: x[1])  # le plus négatif d'abord
+
+        for pair, score in negatives:
+            proposal = self.sessions[pair].propose(force_direction="short")
+            if proposal.order is not None:  # à plat + plafonds OK
+                cand = Candidate(pair=pair, intent="open_short", momentum=proposals[pair].momentum,
+                                 sentiment=score, sentiment_reliable=True, rank_score=-score)
+                self.audit_log.log_event("sentiment_short", {"pair": pair, "sentiment": round(score, 3),
+                                                             "threshold": threshold})
                 return cand, proposal
         return None
 

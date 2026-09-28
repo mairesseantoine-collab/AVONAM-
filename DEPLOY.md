@@ -240,6 +240,51 @@ Le plafond `AVONAM_MAX_POSITION_EUR` s'applique **par crypto** : avec 5
 paires et un plafond de 50 €, l'exposition totale possible est de 5 × 50 €.
 Ajustez `AVONAM_MAX_TOTAL_EUR` et `AVONAM_MAX_POSITION_EUR` en conséquence.
 
+## Gestion du risque des positions (stop-loss, take-profit, stop suiveur)
+
+Appliquée aux positions RÉELLES à chaque cycle, en plus du signal de la
+stratégie. Une sortie de risque est toujours prioritaire et n'est jamais
+bloquée par un plafond de taille (sortir doit toujours être possible).
+
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `AVONAM_STOP_LOSS_PCT` | Sortie si la perte atteint ce % | `0` (off) |
+| `AVONAM_TAKE_PROFIT_PCT` | Sortie si le gain atteint ce % | `0` (off) |
+| `AVONAM_TRAILING_STOP_PCT` | Sortie si repli de ce % depuis le plus haut atteint | `0` (off) |
+| `AVONAM_VOL_TARGET_PCT` | Taille ajustée à la volatilité (0 = taille fixe) | `0` |
+| `AVONAM_VOL_LOOKBACK` | Barres pour estimer la volatilité | `24` |
+| `AVONAM_MIN_ORDER_EUR` | Plancher de taille (min d'ordre Kraken) | `5` |
+
+Exemple prudent : `AVONAM_STOP_LOSS_PCT=5`, `AVONAM_TAKE_PROFIT_PCT=10`,
+`AVONAM_TRAILING_STOP_PCT=8`. La **taille ajustée à la volatilité** réduit
+automatiquement la mise sur les cryptos les plus agitées, sans jamais dépasser
+`AVONAM_MAX_ORDER_EUR` ni descendre sous `AVONAM_MIN_ORDER_EUR`.
+
+> Note sur le prix d'entrée : pour les longs, il est reconstruit depuis le
+> journal d'audit ; sur un disque éphémère (Render sans disque persistant) le
+> journal se réinitialise au redéploiement, et le prix d'entrée d'une position
+> ouverte AVANT le redémarrage peut être perdu, ce qui désactive stop/objectif
+> pour cette position-là. Pour les shorts, l'entrée est lue en direct sur
+> Kraken (durable). Un disque persistant rend le tout durable.
+
+## Paris à la baisse déclenchés par le sentiment
+
+Par défaut le sentiment ne fait que filtrer et départager, il ne déclenche
+jamais d'ordre. Si tu veux qu'un sentiment franchement négatif ouvre un short
+(pari à la baisse), active-le explicitement. Cela exige les shorts.
+
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `AVONAM_SENTIMENT_SHORT` | `true` : un sentiment très négatif ouvre un short | `false` |
+| `AVONAM_SENTIMENT_SHORT_THRESHOLD` | Score de sentiment en dessous duquel on parie à la baisse | `-0.5` |
+| `AVONAM_ALLOW_SHORT` | Obligatoire (`true`) pour cette option | `false` |
+
+> ⚠️ Franchement : parier à la baisse sur du sentiment de forum, c'est cumuler
+> deux sources de risque (un signal très bruité et l'effet de levier du short).
+> Valide d'abord en `AVONAM_MODE=shadow`. Le short reste borné par tous les
+> plafonds et le coupe-circuit, et il est suspendu quand le marché est en
+> risk-off.
+
 ## Plancher d'activité : forcer au moins N ordres par jour
 
 Par défaut, le robot n'agit que sur signal : certains jours, il ne trade pas,
