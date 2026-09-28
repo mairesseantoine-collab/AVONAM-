@@ -73,7 +73,11 @@ def build_market_provider():
         from market.news import NewsProvider
         feeds = os.environ.get("AVONAM_NEWS_FEEDS", "").strip()
         feed_list = [f.strip() for f in feeds.split(",") if f.strip()] or None
-        providers.append(NewsProvider(feeds=feed_list))
+        providers.append(NewsProvider(
+            feeds=feed_list,
+            risk_off_min_hits=int(os.environ.get("AVONAM_NEWS_RISK_HITS", 8)),
+            risk_off_fraction=float(os.environ.get("AVONAM_NEWS_RISK_FRACTION", 0.30)),
+        ))
 
     if not providers:
         from market.signal import NullMarketProvider

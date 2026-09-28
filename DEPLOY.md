@@ -210,8 +210,12 @@ gratuits et sans clé :
   marché » qui complète celui « de discussion ».
 - **Fear & Greed Index** (marché entier) : lecture contrarienne. En avidité
   extrême, il suspend les ouvertures le temps d'un cycle.
-- **Actualité RSS** (marché entier) : en cas d'événement grave répété dans
-  les titres (piratage, interdiction), il suspend aussi les ouvertures.
+- **Actualité RSS** (marché entier) : suspend les ouvertures seulement en cas
+  de CRISE qui domine l'actualité (une fraction importante des titres récents
+  porte sur un événement systémique). Un incident isolé, fréquent en crypto,
+  ne bloque pas. Réglable via `AVONAM_NEWS_RISK_HITS` (min de titres, défaut 8)
+  et `AVONAM_NEWS_RISK_FRACTION` (fraction, défaut 0.30). Pour couper cette
+  source : `AVONAM_USE_NEWS=false`.
 
 Sentiment par crypto et contexte de marché gardent le même principe : jamais
 un déclencheur d'ordre, seulement un filtre prudent et un départage.

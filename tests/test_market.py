@@ -60,20 +60,31 @@ def test_fear_greed_network_error_is_neutral():
 
 # -- News --------------------------------------------------------------------
 
-def test_news_risk_off_on_many_risk_titles():
-    xml = "<title>Feed</title>" + "".join(
-        f"<title>Major exchange hack, funds stolen #{i}</title>" for i in range(4)
-    )
-    news = NewsProvider(transport=_TextTransport(xml), feeds=["x"], risk_off_hits=3)
+def test_news_risk_off_when_crisis_dominates():
+    # Une crise qui domine l'actualité : la plupart des titres sont graves.
+    titles = "".join(f"<title>Major exchange collapse, contagion #{i}</title>" for i in range(10))
+    xml = "<title>Feed</title>" + titles
+    news = NewsProvider(transport=_TextTransport(xml), feeds=["x"], risk_off_min_hits=8, risk_off_fraction=0.30)
     sig = news.evaluate()
     assert sig.risk_off is True
 
 
-def test_news_quiet_is_neutral():
-    xml = "<title>Feed</title><title>Bitcoin price steady as markets calm</title>"
-    news = NewsProvider(transport=_TextTransport(xml), feeds=["x"], risk_off_hits=3)
+def test_news_background_noise_does_not_trigger():
+    # Bruit de fond normal du secteur : quelques incidents parmi beaucoup de
+    # titres anodins ne doivent PAS bloquer le robot (le bug corrigé).
+    risky = "".join(f"<title>Small protocol hack of $2M #{i}</title>" for i in range(3))
+    calm = "".join(f"<title>Bitcoin price steady as market watches #{i}</title>" for i in range(40))
+    xml = "<title>Feed</title>" + risky + calm
+    news = NewsProvider(transport=_TextTransport(xml), feeds=["x"], risk_off_min_hits=8, risk_off_fraction=0.30)
     sig = news.evaluate()
     assert sig.risk_off is False
+
+
+def test_news_cdata_titles_are_cleaned():
+    xml = "<title>Feed</title><title><![CDATA[Bitcoin steady today]]></title>"
+    news = NewsProvider(transport=_TextTransport(xml), feeds=["x"])
+    sig = news.evaluate()
+    assert sig.risk_off is False  # pas de terme systémique, et CDATA nettoyé
 
 
 # -- CoinGecko ---------------------------------------------------------------
