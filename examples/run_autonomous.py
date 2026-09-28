@@ -40,7 +40,10 @@ Variables d'environnement lues :
                                 gestion du risque des positions, en % (0 = off).
     AVONAM_VOL_TARGET_PCT       taille ajustée à la volatilité (0 = taille fixe).
                                 AVONAM_VOL_LOOKBACK (24), AVONAM_MIN_ORDER_EUR (5).
-    AVONAM_TICK_SECONDS         intervalle entre deux cycles (défaut 3600)
+    AVONAM_OHLC_INTERVAL        unité de temps des bougies en minutes (défaut 60).
+                                5 ou 15 = intraday. Kraken : 1,5,15,30,60,240,1440.
+    AVONAM_TICK_SECONDS         intervalle entre deux cycles (défaut 3600).
+                                Pour l'intraday, l'aligner sur les bougies (ex. 300).
     KRAKEN_API_KEY / _SECRET    clé restreinte (jamais « Withdraw »)
     AVONAM_MAX_ORDER_EUR, AVONAM_MAX_DAY_EUR, AVONAM_MAX_TOTAL_EUR,
     AVONAM_MAX_TRADES_PER_DAY   plafonds (défauts 10 / 30 / 50 / 3)

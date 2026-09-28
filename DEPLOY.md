@@ -240,6 +240,34 @@ Le plafond `AVONAM_MAX_POSITION_EUR` s'applique **par crypto** : avec 5
 paires et un plafond de 50 €, l'exposition totale possible est de 5 × 50 €.
 Ajustez `AVONAM_MAX_TOTAL_EUR` et `AVONAM_MAX_POSITION_EUR` en conséquence.
 
+## Trading intraday (bougies courtes, cadence rapide)
+
+Le robot travaille par défaut sur des bougies horaires, avec un cycle par
+heure. Pour de l'intraday actif (bougies de 5 ou 15 min, décisions plus
+fréquentes), deux variables suffisent, plus le plafond de trades.
+
+| Variable | Rôle | Exemple intraday |
+|---|---|---|
+| `AVONAM_OHLC_INTERVAL` | Unité de temps des bougies, en minutes (Kraken : 1, 5, 15, 30, 60, 240, 1440) | `5` |
+| `AVONAM_TICK_SECONDS` | Intervalle entre deux cycles ; à aligner sur les bougies | `300` (5 min) |
+| `AVONAM_MAX_TRADES_PER_DAY` | Plafond dur du nombre d'opérations par jour | `10` |
+
+Aligne toujours `AVONAM_TICK_SECONDS` sur `AVONAM_OHLC_INTERVAL` (×60) :
+inutile de scruter toutes les 5 minutes une bougie horaire, ni l'inverse.
+
+> ⚠️ **Vrai « haute fréquence » : non, et c'est normal.** Ce robot passe par
+> l'API REST de Kraken depuis un serveur : il n'y a pas de latence de HFT
+> professionnel (millisecondes, colocation). Ce que tu obtiens, c'est de
+> l'intraday actif, ce qui est déjà beaucoup.
+>
+> ⚠️ **Les frais dominent en intraday.** Chaque aller-retour paie ~0,4 à 0,5 %
+> de frais Kraken. À 10 opérations par jour, il faut ~4 à 5 % de gain brut par
+> jour juste pour couvrir les frais. Plus tu trades vite, plus les frais
+> rognent le résultat. Le plafond `AVONAM_MAX_TRADES_PER_DAY=10` est donc un
+> garde-fou utile, garde-le. Valide d'abord en `AVONAM_MODE=shadow` sur
+> plusieurs jours et regarde le journal : tu verras si l'activité rapporte
+> vraiment, frais déduits, avant de risquer de l'argent réel.
+
 ## Gestion du risque des positions (stop-loss, take-profit, stop suiveur)
 
 Appliquée aux positions RÉELLES à chaque cycle, en plus du signal de la

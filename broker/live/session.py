@@ -254,7 +254,7 @@ class LiveTradingSession:
         signal technique, uniquement si la paire est à plat (ni long ni short) et
         si les plafonds l'autorisent. C'est le plancher d'activité optionnel
         (voir broker/live/scanner.py) ; il ne contourne aucun garde-fou."""
-        data = self.client.get_ohlc(self.config.pair)
+        data = self.client.get_ohlc(self.config.pair, interval_minutes=self.config.ohlc_interval_minutes)
         signals = self.strategy.generate_signals(data)
         signal = int(signals.iloc[-1])
         last_price = float(data["close"].iloc[-1])

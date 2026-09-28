@@ -100,6 +100,7 @@ class PortfolioRunner:
         return (
             f"Mode : {self.config.mode.value}\n"
             f"Paires scannées : {pairs}\n"
+            f"Bougies : {self.config.ohlc_interval_minutes} min\n"
             f"Sentiment : {self.sentiment_mode}\n"
             f"Shorts : {shorts}\n"
             f"Paris à la baisse sur sentiment : {sshort}\n"

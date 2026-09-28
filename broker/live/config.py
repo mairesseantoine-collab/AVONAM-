@@ -23,6 +23,7 @@ class LiveMode(str, Enum):
 class LiveTradingConfig:
     mode: LiveMode = LiveMode.SHADOW
     pair: str = "XBTEUR"
+    ohlc_interval_minutes: int = 60        # unité de temps des bougies : 60 = horaire ; 5/15 = intraday
     max_notional_per_order_eur: float = 10.0
     max_notional_per_day_eur: float = 30.0
     max_total_notional_eur: float = 50.0   # plafond cumulé (somme des achats, via journal d'audit)
@@ -94,6 +95,12 @@ class LiveTradingConfig:
                 raise ValueError(f"{name} ne peut pas être négatif.")
         if self.min_notional_eur <= 0:
             raise ValueError("min_notional_eur doit être strictement positif.")
+        # Kraken n'accepte qu'un ensemble fini d'intervalles OHLC (en minutes).
+        if self.ohlc_interval_minutes not in (1, 5, 15, 30, 60, 240, 1440, 10080, 21600):
+            raise ValueError(
+                f"ohlc_interval_minutes ({self.ohlc_interval_minutes}) invalide : "
+                "valeurs Kraken autorisées 1, 5, 15, 30, 60, 240, 1440, 10080, 21600."
+            )
         if self.sentiment_short and not self.allow_short:
             raise ValueError("sentiment_short exige allow_short=true (les shorts doivent être activés).")
 
@@ -114,6 +121,7 @@ class LiveTradingConfig:
         return LiveTradingConfig(
             mode=mode,
             pair=os.environ.get("AVONAM_PAIR", "XBTEUR"),
+            ohlc_interval_minutes=int(os.environ.get("AVONAM_OHLC_INTERVAL", 60)),
             max_notional_per_order_eur=_f("AVONAM_MAX_ORDER_EUR", 10.0),
             max_notional_per_day_eur=_f("AVONAM_MAX_DAY_EUR", 30.0),
             max_total_notional_eur=_f("AVONAM_MAX_TOTAL_EUR", 50.0),
