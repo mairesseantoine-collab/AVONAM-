@@ -96,6 +96,16 @@ votre-domaine.be {
   l'image Docker (voir `Dockerfile`) : le tableau de bord fonctionne dès le
   démarrage, sans base de données ni configuration supplémentaire.
 
+## Voir tes résultats réels (page `/journal`)
+
+La page privée `/journal` affiche en haut un panneau **Résultats réels (source
+Kraken)** : nombre d'opérations, **frais réellement payés**, résultat réalisé
+net (positions déjà clôturées, frais déduits) et cash EUR. Ces chiffres sont
+lus directement sur l'historique de ton compte Kraken (endpoint TradesHistory),
+donc durables et exacts, indépendants du journal du worker (éphémère). C'est le
+bon endroit pour juger honnêtement si l'activité rapporte, une fois les frais
+retranchés.
+
 ## Espace trading réel privé (`/live`) sur Render
 
 Le service expose une page privée `/live`, protégée par mot de passe, où

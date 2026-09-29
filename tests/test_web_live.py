@@ -124,6 +124,16 @@ def test_scan_report_endpoint(monkeypatch, tmp_path):
     assert data["planned"]["kind"] in ("open", "close", "none")
 
 
+def test_performance_endpoint(client):
+    resp = client.get("/api/live/performance", auth=("user", PASSWORD))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "trade_count" in data
+    assert "total_fees_eur" in data
+    assert "realized_pnl_net_eur" in data
+    assert "eur" in data
+
+
 def test_execute_real_when_live_and_confirmed(monkeypatch, tmp_path):
     monkeypatch.setenv("AVONAM_DASHBOARD_PASSWORD", PASSWORD)
     monkeypatch.setattr(webapp, "_build_live_session", lambda: _make_session(tmp_path, LiveMode.LIVE_REAL))

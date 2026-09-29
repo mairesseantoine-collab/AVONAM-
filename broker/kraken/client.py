@@ -115,6 +115,32 @@ class KrakenClient:
     def query_orders(self, txids: list[str]) -> dict:
         return self._private("QueryOrders", {"txid": ",".join(txids)})
 
+    def get_trades_history(self) -> list[dict]:
+        """Historique des exécutions RÉELLES du compte (endpoint privé
+        TradesHistory). C'est la source de vérité comptable, durable côté
+        Kraken, indépendante de notre journal d'audit (éphémère sur Render).
+
+        Chaque entrée simplifiée : {pair, time, type ('buy'/'sell'), price,
+        cost, fee, vol, net}. `cost` et `fee` sont dans la devise de cotation
+        (EUR pour ...EUR). `net` n'est renseigné que pour la clôture d'une
+        position de marge (gain/perte réalisé du short/levier)."""
+        result = self._private("TradesHistory", {})
+        trades = []
+        for txid, t in (result.get("trades") or {}).items():
+            trades.append({
+                "id": txid,
+                "pair": t.get("pair", ""),
+                "time": float(t.get("time", 0.0)),
+                "type": t.get("type", ""),
+                "price": float(t.get("price", 0.0)),
+                "cost": float(t.get("cost", 0.0)),
+                "fee": float(t.get("fee", 0.0)),
+                "vol": float(t.get("vol", 0.0)),
+                "net": float(t["net"]) if t.get("net") not in (None, "") else None,
+            })
+        trades.sort(key=lambda x: x["time"])
+        return trades
+
     def get_open_positions(self) -> list[dict]:
         """Positions de marge ouvertes (endpoint privé OpenPositions).
 

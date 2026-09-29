@@ -34,6 +34,7 @@ class FakeKrakenTransport:
         self.balances: dict[str, float] = {"ZEUR": 1_000.0, "XXBT": 0.05}
         self.orders: dict[str, _FakeOrder] = {}
         self.positions: dict[str, dict] = {}  # positions de marge (short/long à levier)
+        self.trades: dict[str, dict] = {}     # historique des exécutions (TradesHistory)
         self._ohlc_cache: dict[str, list[list]] = {}
 
     # -- helper réservé aux tests / à la démo --------------------------------
@@ -110,6 +111,15 @@ class FakeKrakenTransport:
             txid = f"O{uuid.uuid4().hex[:10].upper()}"
             self.orders[txid] = _FakeOrder(txid=txid, status="open")
 
+            # Enregistre une exécution dans l'historique (frais fictifs 0,26 %).
+            price = self._last_close(pair)
+            cost = float(volume) * price
+            self.trades[f"T{uuid.uuid4().hex[:10].upper()}"] = {
+                "pair": pair, "time": time.time(), "type": side,
+                "price": f"{price}", "cost": f"{cost:.4f}", "fee": f"{cost * 0.0026:.4f}",
+                "vol": volume,
+            }
+
             # Suivi grossier des positions de marge, suffisant pour les tests :
             # un sell/buy à levier (hors reduce_only) ouvre une position ;
             # un reduce_only ferme les positions ouvertes sur la paire.
@@ -126,6 +136,9 @@ class FakeKrakenTransport:
 
         if parsed.path.endswith("/private/OpenPositions"):
             return HttpResponse(200, {"error": [], "result": dict(self.positions)}, {})
+
+        if parsed.path.endswith("/private/TradesHistory"):
+            return HttpResponse(200, {"error": [], "result": {"trades": dict(self.trades), "count": len(self.trades)}}, {})
 
         if parsed.path.endswith("/private/QueryOrders"):
             txids = data.get("txid", "").split(",")

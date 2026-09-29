@@ -313,6 +313,27 @@ def api_live_propose(_auth: bool = Depends(require_live_auth)) -> dict:
         return {"error": str(exc)}
 
 
+@app.get("/api/live/performance")
+def api_live_performance(_auth: bool = Depends(require_live_auth)) -> dict:
+    """Résultats RÉELS lus sur Kraken (historique des trades + compte), source
+    de vérité durable indépendante de notre journal éphémère. Lecture seule."""
+    from broker.live.performance import compute_performance
+
+    try:
+        session, config = _build_live_session()
+        client = session.client
+        perf = compute_performance(client.get_trades_history())
+        balances = {b.asset: b.amount for b in client.get_balance()}
+        return {
+            **perf,
+            "eur": round(balances.get("ZEUR", 0.0), 2),
+            "note": "Résultat réalisé = positions déjà clôturées, frais déduits. "
+                    "Les positions encore ouvertes ne sont pas comptées ici.",
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @app.get("/api/live/scan")
 def api_live_scan(_auth: bool = Depends(require_live_auth)) -> dict:
     """Scan EN LECTURE SEULE de toutes les paires configurées : ce que le robot
@@ -1232,6 +1253,9 @@ _SCAN_PAGE = """<!DOCTYPE html>
   .reasons { font-size:12.5px; color:var(--muted); margin-top:8px; line-height:1.6; }
   .note { font-size:12px; color:var(--muted); line-height:1.6; }
   .ts { font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--muted); }
+  .stat { background:var(--panel-2); border:1px solid var(--border); border-radius:9px; padding:12px 14px; }
+  .stat .lab { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .stat .val { font-family:"IBM Plex Mono",monospace; font-size:20px; margin-top:4px; }
 </style>
 </head>
 <body>
@@ -1248,6 +1272,14 @@ _SCAN_PAGE = """<!DOCTYPE html>
   </nav>
 </header>
 <main>
+  <div class="panel">
+    <h2>Résultats réels (source Kraken)</h2>
+    <div id="perf" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
+      <div class="muted">Chargement…</div>
+    </div>
+    <p class="note" id="perf-note"></p>
+  </div>
+
   <div class="panel">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
       <div><h2 style="margin:0;">Décision projetée du cycle</h2><div class="ts" id="ts">—</div></div>
@@ -1335,8 +1367,29 @@ async function scan() {
   document.getElementById('rows').innerHTML = rows || '<tr><td colspan="7" class="muted">Aucune paire configurée.</td></tr>';
 }
 
-document.getElementById('refresh').addEventListener('click', scan);
+async function loadPerf() {
+  const box = document.getElementById('perf');
+  let d;
+  try { d = await (await fetch('/api/live/performance')).json(); }
+  catch (e) { box.innerHTML = '<div class="muted">Erreur réseau.</div>'; return; }
+  if (d.error) { box.innerHTML = '<div class="muted">Indisponible : ' + d.error + '</div>'; return; }
+
+  const net = d.realized_pnl_net_eur;
+  const netCls = net > 0 ? 'up' : (net < 0 ? 'down' : 'muted');
+  const tile = (lab, val, cls) => '<div class="stat"><div class="lab">' + lab +
+    '</div><div class="val ' + (cls||'') + '">' + val + '</div></div>';
+  box.innerHTML =
+    tile('Opérations', d.trade_count) +
+    tile('Frais payés', '−' + Math.abs(d.total_fees_eur).toFixed(2) + ' €', 'down') +
+    tile('Réalisé net', (net>=0?'+':'') + net.toFixed(2) + ' €', netCls) +
+    tile('Cash EUR', (d.eur||0).toFixed(2) + ' €');
+  document.getElementById('perf-note').textContent =
+    (d.note || '') + (d.has_incomplete_history ? ' (Historique partiel : certaines ventes sans base de coût connue.)' : '');
+}
+
+document.getElementById('refresh').addEventListener('click', () => { scan(); loadPerf(); });
 scan();
+loadPerf();
 </script>
 </body>
 </html>"""
