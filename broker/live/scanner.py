@@ -31,9 +31,17 @@ from datetime import datetime, timezone
 
 from broker.live.assets import sentiment_symbol_for
 from broker.live.autonomous import TickResult, _alert
-from broker.live.session import LiveTradingSession
+from broker.live.session import (
+    LiveTradingSession, cancel_stale_orders, cancelled_unfilled_ids, reconcile_maker_orders,
+)
 from market.signal import NullMarketProvider
 from sentiment.provider import NullSentimentProvider, SentimentProvider
+
+
+def _auto_lines(sessions) -> str:
+    """Verdicts de la sélection automatique (AVONAM_STRATEGY=auto), s'il y en a."""
+    lines = [s.strategy.describe() for s in sessions if hasattr(s.strategy, "describe")]
+    return ("\nSélection automatique validée :\n  " + "\n  ".join(lines)) if lines else ""
 
 
 @dataclass
@@ -76,10 +84,13 @@ class PortfolioRunner:
 
     def _executed_today(self) -> int:
         today = datetime.now(timezone.utc).date().isoformat()
+        entries = self.audit_log.read_all()
+        cancelled = cancelled_unfilled_ids(entries)
         return sum(
             1
-            for e in self.audit_log.read_all()
+            for e in entries
             if e.event_type == "live_order_executed" and e.timestamp.startswith(today)
+            and e.payload.get("order_id") not in cancelled
         )
 
     def summary_text(self) -> str:
@@ -112,6 +123,7 @@ class PortfolioRunner:
             f"Plafonds : {self.config.max_notional_per_order_eur} €/ordre, "
             f"{self.config.max_position_eur} € d'exposition max par crypto.\n"
             f"Coupe-circuit : {'DÉCLENCHÉ' if self.killswitch.is_tripped else 'ok'}."
+            + _auto_lines(self.sessions.values())
         )
 
     # -- cycle -----------------------------------------------------------------
@@ -125,6 +137,15 @@ class PortfolioRunner:
         is_open = getattr(self._first.client, "is_market_open", lambda: True)
         if not is_open():
             return TickResult(False, "Marché fermé (hors horaires de la place de marché).")
+
+        # Mode maker : annule les ordres limites du robot non exécutés à temps
+        # avant de décider (le prix a bougé ; on replacera si le signal tient
+        # toujours). Seuls les ordres marqués par le robot sont concernés.
+        if self.config.order_type == "maker":
+            reconcile_maker_orders(self._first.client, self.audit_log, killswitch=self.killswitch)
+            names = set().union(*(s.pair_aliases() for s in self.sessions.values()))
+            cancel_stale_orders(self._first.client, self.audit_log, self.config.maker_timeout_min,
+                                pairs=names, killswitch=self.killswitch)
 
         if self._executed_today() >= self.config.max_trades_per_day:
             return TickResult(False, f"Plafond de {self.config.max_trades_per_day} trades/jour atteint.")
@@ -147,12 +168,13 @@ class PortfolioRunner:
             if proposal.order is not None and proposal.decision.intent in ("close_long", "close_short"):
                 result = self.sessions[pair].confirm_and_execute(proposal, human_confirmed=True)
                 if result is not None:
+                    verb = "placée (limite maker)" if proposal.order.post_only else "exécutée"
                     _alert(
-                        f"Fermeture exécutée ({pair})",
+                        f"Fermeture {verb} ({pair})",
                         f"Fermeture de position sur {pair} (~{proposal.estimated_notional_eur:.2f} €, "
                         f"id {result.order_id}).",
                     )
-                    return TickResult(True, f"Fermeture {pair} exécutée (~{proposal.estimated_notional_eur:.2f} €).", result)
+                    return TickResult(True, f"Fermeture {pair} {verb} (~{proposal.estimated_notional_eur:.2f} €).", result)
 
         # Un risk_off (événement grave, euphorie extrême) suspend TOUTE
         # ouverture ce cycle, y compris le plancher d'activité forcé ; les
@@ -201,13 +223,14 @@ class PortfolioRunner:
 
         sens = "achat (long)" if candidate.intent == "open_long" else "vente à découvert (short)"
         tag = " [forcé, plancher d'activité]" if forced else ""
+        verb = "placée (limite maker, en attente d'exécution)" if proposal.order.post_only else "exécutée"
         _alert(
-            f"Ouverture {candidate.intent} exécutée ({candidate.pair}){tag}",
+            f"Ouverture {candidate.intent} {verb} ({candidate.pair}){tag}",
             f"{sens} de ~{proposal.estimated_notional_eur:.2f} € sur {candidate.pair} "
             f"(momentum {candidate.momentum:+.2%}, sentiment {candidate.sentiment:+.2f}, id {result.order_id}).",
         )
         detail = (
-            f"Ouverture {candidate.intent} {candidate.pair}{tag} exécutée "
+            f"Ouverture {candidate.intent} {candidate.pair}{tag} {verb} "
             f"(~{proposal.estimated_notional_eur:.2f} €, momentum {candidate.momentum:+.2%})."
         )
         return TickResult(True, detail, result)

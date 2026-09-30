@@ -23,7 +23,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from broker.live.session import LiveTradingSession
+from broker.live.session import (
+    LiveTradingSession, cancel_stale_orders, cancelled_unfilled_ids, reconcile_maker_orders,
+)
 from broker.models import OrderResult
 
 
@@ -53,10 +55,13 @@ class AutonomousRunner:
 
     def _executed_today(self) -> int:
         today = datetime.now(timezone.utc).date().isoformat()
+        entries = self.audit_log.read_all()
+        cancelled = cancelled_unfilled_ids(entries)
         return sum(
             1
-            for e in self.audit_log.read_all()
+            for e in entries
             if e.event_type == "live_order_executed" and e.timestamp.startswith(today)
+            and e.payload.get("order_id") not in cancelled
         )
 
     def scan_report(self) -> dict:
@@ -97,6 +102,8 @@ class AutonomousRunner:
             f"Plafonds : {self.config.max_notional_per_order_eur} €/ordre, "
             f"{self.config.max_position_eur} € de position max.\n"
             f"Coupe-circuit : {'DÉCLENCHÉ' if self.session.killswitch.is_tripped else 'ok'}."
+            + (f"\nSélection automatique validée : {self.session.strategy.describe()}"
+               if hasattr(self.session.strategy, "describe") else "")
         )
 
     def tick(self) -> TickResult:
@@ -115,6 +122,14 @@ class AutonomousRunner:
         is_open = getattr(self.session.client, "is_market_open", lambda: True)
         if not is_open():
             return TickResult(False, "Marché fermé (hors horaires de la place de marché).")
+
+        # Mode maker : les ordres limites du robot non exécutés à temps sont
+        # annulés avant de décider (le prix a bougé ; on replacera si le signal
+        # tient). Seuls les ordres marqués par le robot sont concernés.
+        if self.config.order_type == "maker":
+            reconcile_maker_orders(self.session.client, self.audit_log, killswitch=self.session.killswitch)
+            cancel_stale_orders(self.session.client, self.audit_log, self.config.maker_timeout_min,
+                                pairs=self.session.pair_aliases(), killswitch=self.session.killswitch)
 
         executed_today = self._executed_today()
         if executed_today >= self.config.max_trades_per_day:
@@ -139,9 +154,10 @@ class AutonomousRunner:
                 reason = payload.get("reason") or payload.get("error") or reason
             return TickResult(False, f"Non exécuté — {reason}")
 
+        verb = "placé (limite maker, en attente d'exécution)" if proposal.order.post_only else "exécuté"
         _alert(
-            f"Ordre réel {proposal.order.side} exécuté",
+            f"Ordre réel {proposal.order.side} {verb}",
             f"Le robot a passé un ordre {proposal.order.side} de ~{proposal.estimated_notional_eur:.2f} € "
             f"sur {proposal.order.pair} (id {result.order_id}, statut {result.status}).",
         )
-        return TickResult(True, f"Ordre {proposal.order.side} exécuté (~{proposal.estimated_notional_eur:.2f} €).", result)
+        return TickResult(True, f"Ordre {proposal.order.side} {verb} (~{proposal.estimated_notional_eur:.2f} €).", result)

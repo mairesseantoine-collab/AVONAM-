@@ -58,7 +58,7 @@ PARAM_GRIDS: dict[str, list[dict]] = {
 class WalkForwardConfig:
     train_bars: int = 250
     test_bars: int = 90
-    commission_pct: float = 0.26        # frais taker Kraken réalistes, pas 0,05 %
+    commission_pct: float = 0.80        # frais taker Kraken Pro palier 1 (juillet 2026), voir broker/kraken/fees.py
     slippage_pct: float = 0.05
     periods_per_year: int = 365         # jours crypto (24/7) par défaut
     vol_target_pct: float = 40.0        # dimensionnement par volatilité cible
@@ -119,6 +119,21 @@ def _run(data: pd.DataFrame, name: str, params: dict, cfg: WalkForwardConfig):
     return engine.run(data, _build(name, params, cfg), periods_per_year=cfg.periods_per_year)
 
 
+def best_params(train: pd.DataFrame, strategy: str, cfg: WalkForwardConfig) -> tuple[dict, float]:
+    """Meilleur réglage de la grille sur une fenêtre d'entraînement (critère :
+    Sharpe). Retourne (réglage, Sharpe) ; Sharpe 0 si aucun réglage ne tourne."""
+    grid = PARAM_GRIDS.get(strategy, [{}])
+    chosen, best = grid[0], -np.inf
+    for params in grid:
+        try:
+            s = _run(train, strategy, params, cfg).metrics["sharpe_ratio"]
+        except ValueError:
+            continue  # réglage incompatible avec la fenêtre (historique trop court)
+        if s > best:
+            chosen, best = params, s
+    return chosen, (0.0 if best == -np.inf else float(best))
+
+
 def required_t_stat(n_tested: int, alpha: float = 0.05) -> float:
     """Seuil de significativité (unilatéral) corrigé des tests multiples
     (Bonferroni) : tester 10 stratégies et garder la meilleure exige une
@@ -136,7 +151,6 @@ def walk_forward(
     """`n_tested` : nombre de stratégies comparées en même temps sur ces
     données (pour corriger le seuil de significativité, voir required_t_stat)."""
     cfg = cfg or WalkForwardConfig()
-    grid = PARAM_GRIDS.get(strategy, [{}])
     n = len(data)
     if n < cfg.train_bars + cfg.test_bars:
         raise ValueError(
@@ -162,23 +176,13 @@ def walk_forward(
         train = data.iloc[t0 - cfg.train_bars:t0]
 
         # 1. Choix du réglage sur l'entraînement uniquement (critère : Sharpe).
-        best_params, best_sharpe = grid[0], -np.inf
-        for params in grid:
-            try:
-                m = _run(train, strategy, params, cfg).metrics
-            except ValueError:
-                continue  # réglage incompatible avec la fenêtre (historique trop court)
-            s = m["sharpe_ratio"]
-            if s > best_sharpe:
-                best_params, best_sharpe = params, s
-        if best_sharpe == -np.inf:
-            best_sharpe = 0.0
+        chosen, best_sharpe = best_params(train, strategy, cfg)
 
         # 2. Évaluation hors échantillon. On rejoue sur entraînement + test pour
         # que les indicateurs aient leur historique de chauffe, mais on ne
         # MESURE que la partie test (équity au début du test → fin du test).
         window = data.iloc[t0 - cfg.train_bars:t1]
-        run = _run(window, strategy, best_params, cfg)
+        run = _run(window, strategy, chosen, cfg)
         eq = run.equity_curve
         test_dates = data.index[t0:t1]
         before = eq.loc[:data.index[t0 - 1]]
@@ -207,7 +211,7 @@ def walk_forward(
             index=k,
             train_start=str(train.index[0]), train_end=str(train.index[-1]),
             test_start=str(test_dates[0]), test_end=str(test_dates[-1]),
-            best_params=best_params, train_sharpe=round(float(best_sharpe), 3),
+            best_params=chosen, train_sharpe=round(float(best_sharpe), 3),
             test_sharpe=round(float(test_sharpe), 3),
             test_return_pct=round(test_ret * 100, 2), benchmark_return_pct=round(bh_ret * 100, 2),
             test_trades=test_trades,
@@ -251,6 +255,12 @@ def walk_forward(
         "t_required": round(t_req, 2),
         "n_tested": n_tested,
         "significant": bool(t_stat >= t_req),
+        # Tous les critères du verdict « candidat sérieux » : c'est le seul cas où
+        # le worker en mode auto accepte de trader la stratégie.
+        "qualified": bool(
+            len(result.folds) >= 3 and oos_total > 0 and avg_test > 0 and oos_total > bh_total
+            and t_stat >= t_req and avg_train - avg_test <= 1.0
+        ),
         "verdict": _verdict(oos_total, bh_total, avg_train, avg_test, len(result.folds), t_stat, t_req, n_tested),
     }
     return result

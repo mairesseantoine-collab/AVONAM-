@@ -71,6 +71,20 @@ class LiveTradingConfig:
     vol_lookback: int = 24                 # nb de barres pour estimer la volatilité
     min_notional_eur: float = 5.0          # plancher de taille (min d'ordre Kraken)
 
+    # -- taille et exécution des ordres ----------------------------------------
+    # order_size : "fixed" (défaut) = plafond par ordre (ou taille ajustée à la
+    # volatilité) ; "min" = le MINIMUM accepté par Kraken pour la paire (+5 %
+    # de marge), lu en direct. Tant qu'aucune stratégie n'a prouvé un avantage,
+    # la plus petite mise est la mise optimale : elle limite la perte attendue.
+    # Dans tous les cas, un ordre n'est jamais envoyé sous le minimum Kraken.
+    order_size: str = "fixed"
+    # order_type : "market" (défaut) = ordre au marché, frais TAKER ; "maker" =
+    # entrée par ordre limite post-only au meilleur prix, frais MAKER (deux fois
+    # moins chers au palier 1). Les stops restent toujours au marché.
+    order_type: str = "market"
+    maker_timeout_min: int = 60            # un ordre maker non exécuté après ce délai est annulé
+    maker_exits: bool = False              # True : sorties sur signal aussi en maker (stops toujours au marché)
+
     # Paris à la baisse déclenchés par le sentiment / la peur (opt-in). Quand
     # activé (et allow_short), un sentiment franchement négatif OU une peur
     # extrême du marché ouvre un short, même sans signal technique baissier.
@@ -102,6 +116,12 @@ class LiveTradingConfig:
                 raise ValueError(f"{name} ne peut pas être négatif.")
         if self.min_notional_eur <= 0:
             raise ValueError("min_notional_eur doit être strictement positif.")
+        if self.order_size not in ("fixed", "min"):
+            raise ValueError(f"order_size invalide : {self.order_size!r} (attendu : fixed ou min).")
+        if self.order_type not in ("market", "maker"):
+            raise ValueError(f"order_type invalide : {self.order_type!r} (attendu : market ou maker).")
+        if self.maker_timeout_min < 1:
+            raise ValueError("maker_timeout_min doit valoir au moins 1 minute.")
         # Kraken n'accepte qu'un ensemble fini d'intervalles OHLC (en minutes).
         if self.ohlc_interval_minutes not in (1, 5, 15, 30, 60, 240, 1440, 10080, 21600):
             raise ValueError(
@@ -151,6 +171,10 @@ class LiveTradingConfig:
             vol_target_pct=_f("AVONAM_VOL_TARGET_PCT", 0.0),
             vol_lookback=int(os.environ.get("AVONAM_VOL_LOOKBACK", 24)),
             min_notional_eur=_f("AVONAM_MIN_ORDER_EUR", 5.0),
+            order_size=os.environ.get("AVONAM_ORDER_SIZE", "fixed").strip().lower(),
+            order_type=os.environ.get("AVONAM_ORDER_TYPE", "market").strip().lower(),
+            maker_timeout_min=int(os.environ.get("AVONAM_MAKER_TIMEOUT_MIN", 60)),
+            maker_exits=_b("AVONAM_MAKER_EXITS"),
             sentiment_short=_b("AVONAM_SENTIMENT_SHORT"),
             sentiment_short_threshold=_f("AVONAM_SENTIMENT_SHORT_THRESHOLD", -0.5),
         )

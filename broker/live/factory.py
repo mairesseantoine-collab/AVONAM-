@@ -97,6 +97,9 @@ def build_runner():
         RequestsTransport(),
         api_key=os.environ.get("KRAKEN_API_KEY"),
         api_secret=os.environ.get("KRAKEN_API_SECRET"),
+        # Un cycle lit le solde / les positions / les ordres une seule fois
+        # pour toutes les paires (vidé à chaque ordre envoyé ou annulé).
+        read_cache_ttl_s=10.0,
     )
     audit = AuditLog(os.environ.get("AVONAM_AUDIT_PATH", "output/live_audit.log"))
     pairs = pairs_from_env(config)
@@ -109,19 +112,20 @@ def build_runner():
     )
 
     if len(pairs) == 1:
+        pair_config = replace(config, pair=pairs[0])
         session = LiveTradingSession(
-            client=client, strategy=build_live_strategy(), agent=RuleBasedAgent(),
-            killswitch=killswitch, audit_log=audit, config=replace(config, pair=pairs[0]),
+            client=client, strategy=build_live_strategy(pair_config), agent=RuleBasedAgent(),
+            killswitch=killswitch, audit_log=audit, config=pair_config,
         )
         return AutonomousRunner(session)
 
-    sessions = {
-        pair: LiveTradingSession(
-            client=client, strategy=build_live_strategy(), agent=RuleBasedAgent(),
-            killswitch=killswitch, audit_log=audit, config=replace(config, pair=pair),
+    sessions = {}
+    for pair in pairs:
+        pair_config = replace(config, pair=pair)
+        sessions[pair] = LiveTradingSession(
+            client=client, strategy=build_live_strategy(pair_config), agent=RuleBasedAgent(),
+            killswitch=killswitch, audit_log=audit, config=pair_config,
         )
-        for pair in pairs
-    }
     provider, mode = build_sentiment_provider()
     market = build_market_provider()
     return PortfolioRunner(sessions, sentiment_provider=provider, sentiment_mode=mode, market_provider=market)

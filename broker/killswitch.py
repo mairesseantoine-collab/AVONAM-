@@ -74,6 +74,15 @@ class TradingKillSwitch:
             if self._consecutive_failures >= self.max_consecutive_failures:
                 self._tripped = True
 
+    def release(self, notional: float) -> None:
+        """Restitue au plafond journalier le notionnel d'un ordre annulé SANS
+        aucune exécution (ordre limite maker jamais rempli) : il n'a rien
+        engagé. Retire la dernière entrée correspondante ; sans effet sinon."""
+        for i in range(len(self._orders_today) - 1, -1, -1):
+            if abs(self._orders_today[i][1] - notional) < 1e-6:
+                del self._orders_today[i]
+                return
+
     def _total_last_24h(self) -> float:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         self._orders_today = [(t, n) for t, n in self._orders_today if t >= cutoff]

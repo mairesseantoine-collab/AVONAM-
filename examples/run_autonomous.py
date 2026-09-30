@@ -45,6 +45,20 @@ Variables d'environnement lues :
                                 filtered (défaut) | simple — voir
                                 broker/live/strategy.py. À choisir via la
                                 validation hors échantillon du site.
+                                auto = le worker valide lui-même toutes les
+                                stratégies sur l'historique Kraken de chaque
+                                paire (frais compris) et ne trade que celle qui
+                                passe ; sinon il reste à plat (recalcul quotidien).
+    AVONAM_ORDER_SIZE           fixed (défaut) = plafond par ordre ; min = le
+                                MINIMUM accepté par Kraken pour la paire (+5 %),
+                                lu en direct. Un ordre n'est jamais envoyé sous
+                                ce minimum.
+    AVONAM_ORDER_TYPE           market (défaut, frais taker 0,80 %) | maker
+                                (ordre limite post-only au meilleur prix, frais
+                                maker 0,40 %). Les stops partent toujours au marché.
+    AVONAM_MAKER_TIMEOUT_MIN    un ordre maker non exécuté après ce délai est
+                                annulé puis replacé si le signal tient (défaut 60).
+    AVONAM_MAKER_EXITS          true = sorties sur signal aussi en maker.
     AVONAM_REGIME_PERIOD        moyenne longue du filtre de régime (défaut 200).
     AVONAM_OHLC_INTERVAL        unité de temps des bougies en minutes (défaut 60).
                                 5 ou 15 = intraday. Kraken : 1,5,15,30,60,240,1440.
@@ -80,6 +94,14 @@ def main() -> None:
     print(f"{mode_label} · paires {pairs_label} · tick {interval}s · plafonds "
           f"{config.max_notional_per_order_eur} €/ordre, {config.max_position_eur} € de position max, "
           f"{config.max_trades_per_day} trades/jour\n", flush=True)
+
+    # Minimums d'ordre réels (Kraken, en direct), taille utilisée et coût des
+    # frais : la réponse chiffrée à « combien mettre au minimum par trade ».
+    try:
+        from broker.live.startup import startup_report
+        print(startup_report(runner) + "\n", flush=True)
+    except Exception as exc:  # un rapport ne doit jamais empêcher le démarrage
+        print(f"(rapport de démarrage indisponible : {exc})\n", flush=True)
 
     # Email au démarrage : tu sais que le robot est bien lancé.
     _try_alert(f"Robot démarré ({banner})", runner.summary_text())

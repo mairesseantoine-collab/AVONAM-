@@ -67,7 +67,7 @@ def main() -> None:
     )
     session = LiveTradingSession(
         client=client,
-        strategy=build_live_strategy(),
+        strategy=build_live_strategy(config),
         agent=RuleBasedAgent(),
         killswitch=killswitch,
         audit_log=audit,

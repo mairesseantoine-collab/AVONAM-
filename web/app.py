@@ -41,6 +41,7 @@ from avonam.data.loader import load_csv
 from avonam.risk.manager import RiskManager
 from avonam.strategy.sma_crossover import SMACrossoverStrategy
 from broker.kraken.market_data import fetch_ohlc_dataframe
+from broker.kraken.fees import KRAKEN_TAKER_FEE_PCT
 
 app = FastAPI(title="AVONAM — Tableau de bord de trading (simulation)")
 
@@ -100,7 +101,7 @@ def _build_live_session():
     )
     session = LiveTradingSession(
         client=client,
-        strategy=build_live_strategy(),
+        strategy=build_live_strategy(config),
         agent=RuleBasedAgent(),
         killswitch=killswitch,
         audit_log=audit,
@@ -222,7 +223,7 @@ def run_backtest(
     stop_loss_pct: float = Query(2.0, gt=0),
     take_profit_pct: float = Query(4.0, gt=0),
     max_drawdown_pct: float = Query(20.0, gt=0),
-    commission_pct: float = Query(0.26, ge=0, le=5),
+    commission_pct: float = Query(KRAKEN_TAKER_FEE_PCT, ge=0, le=5),
     slippage_pct: float = Query(0.05, ge=0, le=5),
     vol_target_pct: float = Query(0.0, ge=0, le=300),
     interval: int = Query(60),
@@ -309,7 +310,7 @@ def compare_strategies(
     stop_loss_pct: float = Query(2.0, gt=0),
     take_profit_pct: float = Query(4.0, gt=0),
     max_drawdown_pct: float = Query(20.0, gt=0),
-    commission_pct: float = Query(0.26, ge=0, le=5),
+    commission_pct: float = Query(KRAKEN_TAKER_FEE_PCT, ge=0, le=5),
     slippage_pct: float = Query(0.05, ge=0, le=5),
     vol_target_pct: float = Query(0.0, ge=0, le=300),
     interval: int = Query(60),
@@ -357,7 +358,7 @@ def walkforward_endpoint(
     pair: str = Query("XBTEUR"),
     strategy: str = Query("trend"),
     interval: int = Query(1440),
-    commission_pct: float = Query(0.26, ge=0, le=5),
+    commission_pct: float = Query(KRAKEN_TAKER_FEE_PCT, ge=0, le=5),
     slippage_pct: float = Query(0.05, ge=0, le=5),
     vol_target_pct: float = Query(40.0, ge=0, le=300),
     stop_loss_pct: float = Query(15.0, gt=0),
@@ -818,8 +819,8 @@ _PAGE = """<!DOCTYPE html>
         <div class="slider-line"><input type="range" id="max_drawdown_pct" min="5" max="50" step="1" value="20"><output>20%</output></div>
       </div>
       <div class="slider-row">
-        <label>Frais par ordre <span class="info" tabindex="0" data-tip="Commission payée à chaque achat ET à chaque vente. Kraken facture environ 0,26 % en ordre au marché (taker). Mettre 0 donne des résultats irréalistes et trompeurs.">?</span></label>
-        <div class="slider-line"><input type="range" id="commission_pct" min="0" max="1" step="0.01" value="0.26"><output>0.26%</output></div>
+        <label>Frais par ordre <span class="info" tabindex="0" data-tip="Commission payée à chaque achat ET à chaque vente. Kraken Pro (palier 1, depuis juillet 2026) : 0,80 % en ordre au marché (taker), 0,40 % en ordre limite posé dans le carnet (maker). Un aller-retour au marché coûte donc ~1,6 %. Mettre 0 donne des résultats irréalistes et trompeurs.">?</span></label>
+        <div class="slider-line"><input type="range" id="commission_pct" min="0" max="1.5" step="0.05" value="0.8"><output>0.80%</output></div>
       </div>
       <div class="slider-row">
         <label>Volatilité cible <span class="info" tabindex="0" data-tip="0 = taille calculée depuis le stop-loss. Sinon, la taille de position vise cette volatilité annuelle (ex. 40 %) : plus l'actif est agité, plus la position est petite. Technique très robuste pour stabiliser le risque.">?</span></label>

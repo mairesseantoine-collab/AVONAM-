@@ -14,6 +14,8 @@ class Order:
     price: float | None = None   # obligatoire si order_type == "limit"
     leverage: int | None = None  # None = spot (aucun levier) ; >1 = marge (short / long à levier)
     reduce_only: bool = False    # True = ne fait que réduire/fermer une position de marge existante
+    post_only: bool = False      # True = ordre limite qui ne peut QUE s'ajouter au carnet (frais maker), refusé s'il s'exécuterait immédiatement
+    userref: int | None = None   # référence libre (entier 32 bits) : marque les ordres du robot pour ne jamais toucher aux ordres manuels
 
     def __post_init__(self) -> None:
         if self.side not in ("buy", "sell"):
@@ -26,6 +28,8 @@ class Order:
             raise ValueError(f"volume doit être positif (reçu: {self.volume})")
         if self.leverage is not None and self.leverage < 2:
             raise ValueError(f"leverage doit valoir au moins 2 sur marge (reçu: {self.leverage}). None = spot.")
+        if self.post_only and self.order_type != "limit":
+            raise ValueError("post_only n'a de sens que pour un ordre 'limit'.")
 
     @property
     def is_margin(self) -> bool:

@@ -14,6 +14,12 @@ Retour à la moyenne (pour comparer ; souvent mangé par les frais) :
     zscore_trend   → idem, n'achète les creux qu'en tendance haussière de fond
     rsi            → RSI survente / surachat
 
+Sélection validée (worker uniquement) :
+    auto           → teste toutes les stratégies ci-dessus hors échantillon sur
+                     l'historique Kraken de chaque paire, frais compris, et ne
+                     trade que celle qui passe la validation ; sinon reste à plat
+                     (voir broker/live/auto_select.py)
+
 Historiques :
     filtered (défaut) → SMA avec filtres tendance / écart / volatilité
     simple            → croisement de moyennes brut
@@ -86,12 +92,18 @@ def build_strategy(
     return FilteredSMAStrategy(fast_period=fast, slow_period=slow)
 
 
-def build_live_strategy() -> Strategy:
+def build_live_strategy(config=None) -> Strategy:
+    """Stratégie du worker, d'après AVONAM_STRATEGY. `config`
+    (LiveTradingConfig de la paire) est requis pour « auto » : la sélection
+    validée a besoin de la paire, de l'unité de temps et du type d'ordre."""
     fast = int(os.environ.get("AVONAM_FAST_PERIOD", 20))
     slow = int(os.environ.get("AVONAM_SLOW_PERIOD", 50))
     allow_short = os.environ.get("AVONAM_ALLOW_SHORT", "").strip().lower() in ("1", "true", "yes", "on")
     regime = int(os.environ.get("AVONAM_REGIME_PERIOD", 200))
-    return build_strategy(
-        os.environ.get("AVONAM_STRATEGY", "filtered"), fast, slow,
-        allow_short=allow_short, regime_period=regime,
-    )
+    name = os.environ.get("AVONAM_STRATEGY", "filtered").strip().lower()
+    if name == "auto":
+        if config is None:
+            raise ValueError("AVONAM_STRATEGY=auto exige la configuration de la paire (voir broker/live/factory.py).")
+        from broker.live.auto_select import AutoStrategy, validation_config
+        return AutoStrategy(config.pair, validation_config(config, regime_period=regime))
+    return build_strategy(name, fast, slow, allow_short=allow_short, regime_period=regime)

@@ -297,6 +297,64 @@ Démarche recommandée :
 > rentabilité de la méthode. Préfère un stop de sécurité large et un stop
 > suiveur.
 
+## Frais Kraken, taille minimale, ordres maker et sélection automatique
+
+Depuis le 9 juillet 2026, Kraken Pro facture au palier 1 (moins de 2 500 $ de
+volume sur 30 jours) **0,40 % en maker** (ordre limite qui attend dans le
+carnet) et **0,80 % en taker** (ordre au marché). Un aller-retour au marché
+coûte donc environ **1,6 %** : une position doit gagner plus que ça pour
+rapporter quoi que ce soit. Les frais sont **proportionnels** (pas de frais
+fixe par ordre) : un gros ordre ne coûte pas moins cher en pourcentage.
+
+Le worker en tient compte :
+
+- **Bougies clôturées** : les signaux ne reposent que sur des bougies terminées
+  (comme dans le backtest), le prix d'exécution reste le prix actuel. Fini les
+  signaux qui « clignotent » pendant qu'une bougie se forme.
+- **Minimums Kraken** : le worker lit en direct le minimum d'ordre de chaque
+  paire (`AssetPairs`) et n'envoie jamais un ordre en dessous (Kraken le
+  refuserait). Une quantité sous le minimum (poussière invendable) n'est pas
+  considérée comme une position. Au démarrage, les logs affichent pour chaque
+  paire le minimum en euros au prix du moment, la taille qui sera utilisée et le
+  coût d'un aller-retour.
+- **`AVONAM_ORDER_SIZE=min`** : chaque ouverture se fait au minimum Kraken de la
+  paire (+5 % de marge). Si ce minimum dépasse `AVONAM_MAX_ORDER_EUR`, la paire
+  n'est pas ouverte (raison claire dans les logs).
+- **`AVONAM_ORDER_TYPE=maker`** : les entrées partent en ordre limite
+  *post-only* au meilleur prix (acheteur au bid, vendeur à l'ask) et paient les
+  frais maker, deux fois moins chers. Un ordre non exécuté après
+  `AVONAM_MAKER_TIMEOUT_MIN` minutes est annulé puis replacé au prix du moment si
+  le signal tient toujours. Les **stops partent toujours au marché** : sortir doit
+  être garanti. Le robot marque ses ordres limites (référence `userref`) et **ne
+  touche jamais à tes ordres passés à la main**. La clé API doit avoir la
+  permission « Query Open Orders & Trades ».
+- **`AVONAM_STRATEGY=auto`** : chaque jour, le worker met toutes les stratégies à
+  l'épreuve (walk-forward, frais réels compris, seuil statistique corrigé pour 10
+  stratégies comparées) sur l'historique Kraken de chaque paire, et ne trade que
+  celle qui passe **tous** les critères. Sinon il reste à plat sur la paire (et
+  referme une position existante si `AVONAM_SIGNAL_EXIT=true`). Le verdict par
+  paire apparaît dans les logs (`[auto] ...`) et l'email quotidien. C'est
+  exigeant : souvent, rien ne passe, et c'est la bonne décision.
+
+**Configuration recommandée du worker** (à mettre dans *Environment* du
+Background Worker Render) :
+
+| Variable | Valeur | Pourquoi |
+|---|---|---|
+| `AVONAM_STRATEGY` | `auto` | ne trader qu'une stratégie validée sur tes paires |
+| `AVONAM_OHLC_INTERVAL` | `1440` (ou `240`) | moins de trades, donc moins de frais |
+| `AVONAM_TICK_SECONDS` | `3600` | un cycle par heure suffit sur ces bougies |
+| `AVONAM_ORDER_SIZE` | `min` | la plus petite mise tant qu'aucun avantage n'est prouvé |
+| `AVONAM_ORDER_TYPE` | `maker` | frais d'entrée divisés par deux |
+| `AVONAM_MAKER_TIMEOUT_MIN` | `60` | aligné sur le cycle |
+| `AVONAM_MIN_TRADES_PER_DAY` | `0` | ne jamais forcer de trade sans signal |
+| `AVONAM_SIGNAL_EXIT` | `true` | sortir quand la stratégie sort |
+| `AVONAM_STOP_LOSS_PCT` | `15` | stop de catastrophe, large |
+| `AVONAM_TAKE_PROFIT_PCT` | `0` | laisser courir les tendances |
+| `AVONAM_ALLOW_SHORT` | `false` | pas de levier tant que rien n'est prouvé |
+| `AVONAM_SENTIMENT_SHORT` | `false` | idem |
+| `AVONAM_MAX_ORDER_EUR` | au-dessus du plus gros minimum affiché au démarrage | sinon la paire est ignorée |
+
 ## Trading intraday (bougies courtes, cadence rapide)
 
 Le robot travaille par défaut sur des bougies horaires, avec un cycle par

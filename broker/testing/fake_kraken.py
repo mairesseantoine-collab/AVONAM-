@@ -27,6 +27,16 @@ from common.http_transport import HttpResponse
 class _FakeOrder:
     txid: str
     status: str = "open"  # "open", "closed", "canceled"
+    pair: str = ""
+    side: str = ""
+    order_type: str = "market"
+    price: float | None = None
+    post_only: bool = False
+    opentm: float = 0.0
+    vol_exec: float = 0.0
+    volume: float = 0.0
+    userref: int | None = None
+    reason: str | None = None  # motif d'annulation (ex. « Post only order », « User requested »)
 
 
 class FakeKrakenTransport:
@@ -36,6 +46,21 @@ class FakeKrakenTransport:
         self.positions: dict[str, dict] = {}  # positions de marge (short/long à levier)
         self.trades: dict[str, dict] = {}     # historique des exécutions (TradesHistory)
         self._ohlc_cache: dict[str, list[list]] = {}
+        # Règles de paire (AssetPairs) plausibles ; modifiables par les tests.
+        self.pair_info: dict[str, dict] = {
+            "XBTEUR": {"ordermin": "0.00005", "costmin": "0.5", "lot_decimals": 8, "pair_decimals": 1},
+            "ETHEUR": {"ordermin": "0.002", "costmin": "0.5", "lot_decimals": 8, "pair_decimals": 2},
+            "SOLEUR": {"ordermin": "0.02", "costmin": "0.5", "lot_decimals": 8, "pair_decimals": 2},
+            "ADAEUR": {"ordermin": "5", "costmin": "0.5", "lot_decimals": 8, "pair_decimals": 6},
+            "DOTEUR": {"ordermin": "0.5", "costmin": "0.5", "lot_decimals": 8, "pair_decimals": 4},
+        }
+        self.rejections: list[str] = []  # motifs de refus simulés (volume sous le minimum, post-only...)
+        self.open_orders_error: str | None = None  # simule une clé sans la permission de lire les ordres
+        self.cancel_error: str | None = None       # simule un échec d'annulation (ordre déjà exécuté...)
+
+    # Comme le vrai Kraken, AssetPairs indexe BTC et ETH sous leur nom interne
+    # (XXBTZEUR...) ; les ordres, eux, affichent le nom court (XBTEUR).
+    _INTERNAL_NAMES = {"XBTEUR": "XXBTZEUR", "ETHEUR": "XETHZEUR"}
 
     # -- helper réservé aux tests / à la démo --------------------------------
 
@@ -46,22 +71,43 @@ class FakeKrakenTransport:
     def _last_close(self, pair: str) -> float:
         return float(self._synthetic_ohlc(pair)[-1][4])
 
+    def _quotes(self, pair: str) -> tuple[float, float]:
+        """(meilleur vendeur « ask », meilleur acheteur « bid ») autour du
+        dernier prix, avec un petit écart comme sur un vrai carnet."""
+        c = self._last_close(pair)
+        return c * 1.0005, c * 0.9995
+
+    def simulate_fill(self, txid: str, fraction: float = 1.0) -> None:
+        """Test : exécute un ordre en attente, entièrement (fraction=1) ou en
+        partie (il reste alors ouvert avec un volume déjà exécuté)."""
+        order = self.orders.get(txid)
+        if order is None:
+            return
+        order.vol_exec = order.volume * min(fraction, 1.0)
+        if fraction >= 1.0:
+            order.status = "closed"
+
     def _synthetic_ohlc(self, pair: str, n: int = 200) -> list[list]:
         if pair not in self._ohlc_cache:
             rng = random.Random(42)
-            price = 30_000.0 if "XBT" in pair else 2_000.0
+            # Ordres de grandeur réalistes, pour que les minimums d'ordre
+            # (AssetPairs) aient un sens en euros.
+            base = next((p for k, p in (("XBT", 30_000.0), ("ETH", 2_000.0), ("SOL", 150.0),
+                                        ("ADA", 0.5), ("DOT", 5.0)) if k in pair), 2_000.0)
+            price = base
+            floor = base * 0.01
             now = int(time.time())
             rows = []
             for i in range(n):
                 drift = rng.gauss(0, price * 0.004)
-                price = max(price + drift, 1.0)
+                price = max(price + drift, floor)
                 o = price
-                c = max(price + rng.gauss(0, price * 0.002), 1.0)
+                c = max(price + rng.gauss(0, price * 0.002), floor)
                 h = max(o, c) * (1 + abs(rng.gauss(0, 0.002)))
                 l = min(o, c) * (1 - abs(rng.gauss(0, 0.002)))
                 vol = abs(rng.gauss(5, 2))
                 t = now - (n - i) * 3600
-                rows.append([t, f"{o:.2f}", f"{h:.2f}", f"{l:.2f}", f"{c:.2f}", f"{c:.2f}", f"{vol:.4f}", i])
+                rows.append([t, f"{o:.6f}", f"{h:.6f}", f"{l:.6f}", f"{c:.6f}", f"{c:.6f}", f"{vol:.4f}", i])
                 price = c
             self._ohlc_cache[pair] = rows
         return self._ohlc_cache[pair]
@@ -76,11 +122,21 @@ class FakeKrakenTransport:
         if parsed.path.endswith("/public/Ticker"):
             rows = self._synthetic_ohlc(pair)
             last_close = rows[-1][4]
-            return HttpResponse(200, {"error": [], "result": {pair: {"c": [last_close, "0.1"], "a": [last_close, "1"], "b": [last_close, "1"]}}}, {})
+            ask, bid = self._quotes(pair)
+            return HttpResponse(200, {"error": [], "result": {pair: {
+                "c": [last_close, "0.1"], "a": [f"{ask:.8f}", "1"], "b": [f"{bid:.8f}", "1"]}}}, {})
 
         if parsed.path.endswith("/public/OHLC"):
             rows = self._synthetic_ohlc(pair)
             return HttpResponse(200, {"error": [], "result": {pair: rows, "last": rows[-1][0]}}, {})
+
+        if parsed.path.endswith("/public/AssetPairs"):
+            wanted = params.get("pair", "").split(",")
+            result = {
+                self._INTERNAL_NAMES.get(p, p): {"altname": p, "wsname": f"{p[:-3]}/{p[-3:]}", **self.pair_info[p]}
+                for p in wanted if p in self.pair_info
+            }
+            return HttpResponse(200, {"error": [], "result": result}, {})
 
         return HttpResponse(404, {"error": [f"route inconnue (fake Kraken) : {url}"]}, {})
 
@@ -103,20 +159,39 @@ class FakeKrakenTransport:
             reduce_only = data.get("reduce_only") == "true"
             descr = f"{side} {volume} {pair} @ {order_type}" + (f" x{leverage}" if leverage else "")
 
+            # Comme le vrai Kraken : un volume sous le minimum de la paire est refusé.
+            rules = self.pair_info.get(pair)
+            if rules and float(volume) < float(rules["ordermin"]):
+                self.rejections.append("ordermin")
+                return HttpResponse(200, {"error": ["EOrder:Order minimum not met"]}, {})
+
             if data.get("validate") == "true":
                 # Mode vérification uniquement (dry-run côté Kraken) :
                 # rien n'est créé, aucun txid réel n'est retourné.
                 return HttpResponse(200, {"error": [], "result": {"descr": {"order": descr}}}, {})
 
-            txid = f"O{uuid.uuid4().hex[:10].upper()}"
-            self.orders[txid] = _FakeOrder(txid=txid, status="open")
+            post_only = "post" in (data.get("oflags") or "")
+            limit_price = float(data["price"]) if data.get("price") else None
+            if post_only and limit_price is not None:
+                # Un post-only qui croiserait le meilleur prix opposé est refusé.
+                ask, bid = self._quotes(pair)
+                if (side == "buy" and limit_price >= ask) or (side == "sell" and limit_price <= bid):
+                    self.rejections.append("post_only")
+                    return HttpResponse(200, {"error": ["EOrder:Post only order"]}, {})
 
-            # Enregistre une exécution dans l'historique (frais fictifs 0,26 %).
+            txid = f"O{uuid.uuid4().hex[:10].upper()}"
+            self.orders[txid] = _FakeOrder(
+                txid=txid, status="open", pair=pair, side=side, order_type=order_type,
+                price=limit_price, post_only=post_only, opentm=time.time(),
+                volume=float(volume), userref=int(data["userref"]) if data.get("userref") else None,
+            )
+
+            # Enregistre une exécution dans l'historique (frais taker palier 1 : 0,80 %).
             price = self._last_close(pair)
             cost = float(volume) * price
             self.trades[f"T{uuid.uuid4().hex[:10].upper()}"] = {
                 "pair": pair, "time": time.time(), "type": side,
-                "price": f"{price}", "cost": f"{cost:.4f}", "fee": f"{cost * 0.0026:.4f}",
+                "price": f"{price}", "cost": f"{cost:.4f}", "fee": f"{cost * 0.008:.4f}",
                 "vol": volume,
             }
 
@@ -146,15 +221,37 @@ class FakeKrakenTransport:
             for txid in txids:
                 order = self.orders.get(txid)
                 if order:
-                    result[txid] = {"status": order.status}
+                    result[txid] = {"status": order.status, "vol_exec": f"{order.vol_exec}",
+                                    "reason": order.reason, "userref": order.userref,
+                                    "descr": {"pair": order.pair, "type": order.side}}
             return HttpResponse(200, {"error": [], "result": result}, {})
 
         if parsed.path.endswith("/private/OpenOrders"):
+            if self.open_orders_error:
+                return HttpResponse(200, {"error": [self.open_orders_error]}, {})
+            # Seuls les ordres limites restent « en attente » ; un ordre au
+            # marché est considéré exécuté immédiatement. Filtre `userref`
+            # comme le vrai Kraken.
+            wanted_ref = int(data["userref"]) if data.get("userref") else None
             open_map = {
-                txid: {"descr": {"order": f"ordre {txid}"}, "status": o.status}
+                txid: {"descr": {"order": f"ordre {txid}", "pair": o.pair, "type": o.side},
+                       "status": o.status, "opentm": o.opentm, "vol_exec": f"{o.vol_exec}",
+                       "userref": o.userref}
                 for txid, o in self.orders.items()
-                if o.status == "open"
+                if o.status == "open" and o.order_type == "limit"
+                and (wanted_ref is None or o.userref == wanted_ref)
             }
             return HttpResponse(200, {"error": [], "result": {"open": open_map}}, {})
+
+        if parsed.path.endswith("/private/CancelOrder"):
+            if self.cancel_error:
+                return HttpResponse(200, {"error": [self.cancel_error]}, {})
+            txid = data.get("txid", "")
+            order = self.orders.get(txid)
+            if not order or order.status != "open":
+                return HttpResponse(200, {"error": ["EOrder:Unknown order"]}, {})
+            order.status = "canceled"
+            order.reason = "User requested"
+            return HttpResponse(200, {"error": [], "result": {"count": 1}}, {})
 
         return HttpResponse(404, {"error": [f"route inconnue (fake Kraken) : {url}"]}, {})
