@@ -58,6 +58,17 @@ def startup_report(runner) -> str:
             line += f" → ordre de {size:.2f} € ; frais d'un aller-retour ≈ {size * round_trip / 100:.2f} €"
         lines.append(line)
 
+    if not config.allow_short:
+        for s in sessions:
+            try:
+                rules = s._pair_rules() or {}
+                if s._open_short_volume() >= max(rules.get("ordermin", 0.0), 1e-8):
+                    lines.append(
+                        f"⚠ {s.config.pair} : un short est encore ouvert alors que les shorts sont désactivés : "
+                        "le robot va le racheter au marché dans les prochains cycles (stops actifs d'ici là).")
+            except Exception:
+                continue
+
     kind = "maker (limite post-only)" if config.order_type == "maker" else "au marché (taker)"
     lines.append(
         f"Frais Kraken palier 1 : entrée {kind} {entry_fee:.2f} %, sortie {exit_fee:.2f} % "

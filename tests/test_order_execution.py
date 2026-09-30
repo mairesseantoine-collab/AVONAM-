@@ -434,3 +434,40 @@ def test_small_volumes_are_sent_without_exponent(tmp_path):
     assert sent["volume"] == "0.00005253"  # 1,575 € au bid de 29 985 €
     assert "e" not in sent["price"].lower() and sent["price"] == "29985"
     assert sent["oflags"] == "post" and sent["userref"] == str(AVONAM_USERREF)
+
+
+# -- shorts désactivés alors qu'un short est encore ouvert ----------------------
+
+def test_open_short_is_closed_when_shorts_are_disabled(tmp_path):
+    """Couper les shorts ne doit jamais abandonner un short à levier sans gestion."""
+    session, transport, _ = _session(tmp_path, signal=1, allow_short=False)
+    transport.positions["P1"] = {"pair": PAIR, "type": "sell", "vol": 0.001, "cost": 30.0}
+    proposal = session.propose()
+    assert proposal.decision.intent == "close_short"
+    order = proposal.order
+    assert order.side == "buy" and order.reduce_only and order.leverage == 2
+    assert session.confirm_and_execute(proposal, human_confirmed=True) is not None
+    assert transport.positions == {}
+
+
+def test_unreadable_margin_positions_do_not_block_spot_trading(tmp_path):
+    """Sans shorts, une clé sans droits de marge ne doit pas bloquer les achats."""
+    class _NoMargin(FakeKrakenTransport):
+        def post(self, url, headers=None, json=None, data=None):
+            if url.endswith("/private/OpenPositions"):
+                from common.http_transport import HttpResponse
+                return HttpResponse(200, {"error": ["EGeneral:Permission denied"]}, {})
+            return super().post(url, headers=headers, json=json, data=data)
+
+    session, _, _ = _session(tmp_path, transport=_NoMargin())
+    proposal = session.propose()
+    assert proposal.decision.intent == "open_long" and proposal.order is not None
+    assert session.confirm_and_execute(proposal, human_confirmed=True) is not None
+
+
+def test_startup_report_warns_about_orphan_short(tmp_path):
+    from broker.live.startup import startup_report
+
+    session, transport, _ = _session(tmp_path, allow_short=False)
+    transport.positions["P1"] = {"pair": PAIR, "type": "sell", "vol": 0.001, "cost": 30.0}
+    assert "short est encore ouvert" in startup_report(AutonomousRunner(session))

@@ -234,7 +234,11 @@ class LiveTradingSession:
     def _open_short_volume(self) -> float:
         """Volume d'un short (position de marge vendeuse) déjà ouvert sur la
         paire, lu en direct sur Kraken (OpenPositions). 0 si aucun, ou si la
-        lecture échoue (on reste prudent : pas de nouveau short proposé)."""
+        lecture échoue (on reste prudent : pas de nouveau short proposé).
+
+        Lu MÊME quand les shorts sont désactivés : un short resté ouvert doit
+        continuer d'être géré (stops) puis refermé, jamais abandonné. Dans ce
+        cas, un échec de lecture (clé sans droits de marge) n'est pas bloquant."""
         try:
             total = 0.0
             for pos in self.client.get_open_positions():
@@ -242,7 +246,8 @@ class LiveTradingSession:
                     total += float(pos.get("volume", 0.0))
             return total
         except Exception:
-            self._read_failed = True
+            if self.config.allow_short:
+                self._read_failed = True
             return 0.0
 
     def _total_executed_eur(self) -> float:
@@ -430,7 +435,7 @@ class LiveTradingSession:
         self._read_failed = False
         held_volume = self._held_base_volume()
         holding = held_volume >= tradable_min
-        short_volume = self._open_short_volume() if self.config.allow_short else 0.0
+        short_volume = self._open_short_volume()
         short_open = short_volume >= tradable_min
         # Ordres maker du robot encore en attente sur la paire. None = lecture
         # impossible (ex. clé API sans la permission de lire les ordres) : on ne
@@ -772,8 +777,7 @@ class LiveTradingSession:
                 return None
             # Plafond d'exposition durable (long + short), relu sur Kraken.
             self._read_failed = False
-            short_v = self._open_short_volume() if self.config.allow_short else 0.0
-            exposure_value = (self._held_base_volume() + short_v) * proposal.last_price
+            exposure_value = (self._held_base_volume() + self._open_short_volume()) * proposal.last_price
             if self._read_failed:
                 self.audit_log.log_event("live_order_refused", {
                     "reason": "solde Kraken illisible juste avant l'envoi : ouverture annulée par prudence",

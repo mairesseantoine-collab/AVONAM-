@@ -355,6 +355,11 @@ Background Worker Render) :
 | `AVONAM_SENTIMENT_SHORT` | `false` | idem |
 | `AVONAM_MAX_ORDER_EUR` | au-dessus du plus gros minimum affiché au démarrage | sinon la paire est ignorée |
 
+Couper les shorts (`AVONAM_ALLOW_SHORT=false`) alors que des shorts sont encore
+ouverts : le robot continue de les gérer (stops) et les **rachète au marché**
+dans les cycles suivants (un par cycle), puis n'en ouvre plus. Un short à levier
+n'est jamais laissé sans gestion. Le démarrage du worker le signale dans les logs.
+
 ## Trading intraday (bougies courtes, cadence rapide)
 
 Le robot travaille par défaut sur des bougies horaires, avec un cycle par

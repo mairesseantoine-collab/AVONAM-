@@ -76,7 +76,16 @@ class RuleBasedAgent:
                 f"{'signal' if signal_exit else 'opposé'}) au prix {last_price:.2f}.",
                 intent="close_long",
             )
-        if allow_short and short_open and short_exit:
+        if short_open and not allow_short:
+            # Shorts désactivés alors qu'un short est encore ouvert : on le
+            # referme (jamais de position à levier laissée sans gestion).
+            return AgentDecision(
+                "buy", 0.7,
+                f"Shorts désactivés (AVONAM_ALLOW_SHORT=false) : rachat du short encore ouvert "
+                f"au prix {last_price:.2f}.",
+                intent="close_short",
+            )
+        if short_open and short_exit:
             return AgentDecision(
                 "buy", 0.6,
                 f"Rachat de couverture du short (signal={signal}, politique "
