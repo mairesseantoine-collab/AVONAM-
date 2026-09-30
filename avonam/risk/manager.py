@@ -26,6 +26,15 @@ class RiskManager:
     max_drawdown_pct: float = 20.0
     """Si l'équity chute de plus de ce % depuis son plus haut, on arrête
     d'ouvrir de nouvelles positions (kill switch)."""
+    vol_target_pct: float = 0.0
+    """Volatilité ANNUALISÉE visée, en % (ex. 40). 0 = désactivé : taille
+    calculée depuis la distance au stop (comportement historique). Quand
+    activé, la position est d'autant plus petite que l'actif est agité, ce qui
+    stabilise le risque réellement pris (Moreira & Muir, « Volatility-Managed
+    Portfolios », 2017)."""
+    max_leverage: float = 1.0
+    """Exposition maximale, en multiple du capital, quand on vise une
+    volatilité (1.0 = jamais plus que le capital, aucun levier)."""
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -36,16 +45,27 @@ class RiskManager:
         ):
             if value <= 0:
                 raise ValueError(f"{name} doit être strictement positif (reçu {value}).")
+        if self.vol_target_pct < 0:
+            raise ValueError("vol_target_pct ne peut pas être négatif.")
+        if self.max_leverage <= 0:
+            raise ValueError("max_leverage doit être strictement positif.")
 
-    def position_size(self, capital: float, entry_price: float, side: int = 1) -> float:
+    def position_size(self, capital: float, entry_price: float, side: int = 1, volatility: float | None = None) -> float:
         """Calcule le nombre d'unités (actions/contrats) à acheter.
 
         `capital` : équity disponible au moment du trade (pas forcément le
         capital initial : on utilise l'équity courante pour que le risque
         en euros s'ajuste avec les gains/pertes accumulés).
+        `volatility` : volatilité annualisée récente de l'actif (fraction,
+        0.6 = 60 %), connue AVANT la décision. Utilisée seulement si
+        `vol_target_pct` est actif.
         """
         if capital <= 0 or entry_price <= 0:
             return 0.0
+
+        if self.vol_target_pct > 0 and volatility is not None and volatility > 0:
+            fraction = min((self.vol_target_pct / 100) / volatility, self.max_leverage)
+            return max(capital * fraction / entry_price, 0.0)
 
         risk_amount = capital * (self.risk_per_trade_pct / 100)
         stop_distance = entry_price * (self.stop_loss_pct / 100)

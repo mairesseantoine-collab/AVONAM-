@@ -254,6 +254,49 @@ Le plafond `AVONAM_MAX_POSITION_EUR` s'applique **par crypto** : avec 5
 paires et un plafond de 50 €, l'exposition totale possible est de 5 × 50 €.
 Ajustez `AVONAM_MAX_TOTAL_EUR` et `AVONAM_MAX_POSITION_EUR` en conséquence.
 
+## Techniques avancées et validation hors échantillon
+
+Le robot et le tableau de bord partagent les mêmes stratégies, choisies sur le
+worker par `AVONAM_STRATEGY` :
+
+| Valeur | Technique | Famille |
+|---|---|---|
+| `trend` | Tendance multi-horizons en ensemble (20/50/100/200) avec hystérésis | Suivi de tendance |
+| `trend_regime` | Idem + filtre de régime (moyenne longue) | Suivi de tendance |
+| `donchian` | Cassure de canal, Turtle système 1 (20/10) | Suivi de tendance |
+| `donchian55` | Cassure de canal, Turtle système 2 (55/20) | Suivi de tendance |
+| `regime_sma` | Croisement de moyennes filtré par le régime | Suivi de tendance |
+| `zscore` | Retour à la moyenne par z-score (bandes de Bollinger) | Retour à la moyenne |
+| `zscore_trend` | Idem, n'achète les creux qu'en tendance haussière de fond | Retour à la moyenne |
+| `rsi`, `filtered`, `simple` | Stratégies historiques | — |
+
+Réglages associés : `AVONAM_FAST_PERIOD` / `AVONAM_SLOW_PERIOD` (horizons,
+défaut 20 / 50), `AVONAM_REGIME_PERIOD` (moyenne de régime, défaut 200), et
+`AVONAM_ALLOW_SHORT=true` pour que les stratégies de tendance émettent aussi
+des signaux vendeurs. Le robot classe en plus les cryptos candidates par
+**momentum ajusté du risque** (rendement / volatilité).
+
+**Ne choisis jamais une stratégie au feeling.** Le tableau de bord propose une
+**validation hors échantillon** (walk-forward) : les réglages sont choisis sur
+une période passée puis testés, sans y toucher, sur la période suivante
+jamais vue. Les frais Kraken réels (0,26 %) sont inclus, la référence
+« acheter et garder » est affichée, et la **significativité statistique** est
+calculée, avec un seuil relevé quand on compare toutes les stratégies à la fois
+(sinon l'une d'elles paraît bonne par pur hasard).
+
+Démarche recommandée :
+1. Tableau de bord → paire Kraken → **« Valider toutes »** (unité jour).
+2. Ne retenir qu'une stratégie qui gagne, bat acheter-et-garder ET passe le
+   seuil de significativité. Si aucune ne le fait, la réponse honnête est de
+   ne pas trader.
+3. La lancer en `AVONAM_MODE=shadow` plusieurs semaines.
+4. Seulement ensuite, du réel, petits montants et stops.
+
+> ⚠️ Pour le suivi de tendance, évite les objectifs de gain serrés
+> (`AVONAM_TAKE_PROFIT_PCT` bas) : ils coupent les gros gains qui font toute la
+> rentabilité de la méthode. Préfère un stop de sécurité large et un stop
+> suiveur.
+
 ## Trading intraday (bougies courtes, cadence rapide)
 
 Le robot travaille par défaut sur des bougies horaires, avec un cycle par

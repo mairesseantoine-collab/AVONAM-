@@ -58,6 +58,15 @@ class OrderProposal:
     last_price: float
     estimated_notional_eur: float
     momentum: float = 0.0        # rendement récent, sert à classer les candidats du multi-crypto
+    volatility: float = 0.0      # écart-type récent des rendements (par barre), pour le momentum ajusté du risque
+
+    @property
+    def risk_adjusted_momentum(self) -> float:
+        """Momentum divisé par la volatilité : un +5 % obtenu calmement vaut
+        mieux qu'un +5 % obtenu dans le chaos. Classer les actifs sur ce ratio
+        plutôt que sur le rendement brut est plus robuste (on compare des
+        tendances « propres », pas des actifs simplement plus agités)."""
+        return self.momentum / self.volatility if self.volatility > 0 else self.momentum
 
 
 class LiveTradingSession:
@@ -363,6 +372,7 @@ class LiveTradingSession:
             last_price=last_price,
             estimated_notional_eur=round(estimated_notional, 2),
             momentum=momentum,
+            volatility=self._volatility(data),
         )
 
     def _build_order(self, intent: str, last_price: float, held_volume: float, short_volume: float,

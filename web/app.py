@@ -49,7 +49,8 @@ DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "sample" / "DEMO.c
 # Paires Kraken autorisées pour le paper trading sur données réelles.
 # Endpoint PUBLIC uniquement (aucune clé API, aucun ordre, aucun risque) —
 # voir broker/kraken/market_data.py et l'avertissement en tête de ce fichier.
-KRAKEN_PAIRS = {"XBTEUR", "ETHEUR"}
+KRAKEN_PAIRS = {"XBTEUR", "ETHEUR", "SOLEUR", "ADAEUR", "DOTEUR"}
+KRAKEN_INTERVALS = {60: 8760, 240: 2190, 1440: 365}  # minutes → barres par an (crypto 24/7)
 
 # --- Espace trading réel (PRIVÉ, protégé par mot de passe) ----------------
 # Séparé du tableau de bord public : c'est le seul endroit de l'interface web
@@ -132,22 +133,76 @@ def _proposal_payload(session, config) -> dict:
 
 
 STRATEGY_LABELS = {
-    "simple": "Croisement de moyennes (SMA)",
-    "filtered": "SMA filtrée (tendance/frais)",
+    "trend": "Tendance multi-horizons",
+    "trend_regime": "Tendance + filtre de régime",
+    "donchian": "Cassure Donchian 20/10",
+    "donchian55": "Cassure Donchian 55/20",
+    "regime_sma": "SMA + filtre de régime",
+    "zscore": "Retour à la moyenne (z-score)",
+    "zscore_trend": "Z-score dans la tendance",
     "rsi": "RSI (retour à la moyenne)",
+    "filtered": "SMA filtrée (tendance/frais)",
+    "simple": "Croisement de moyennes (SMA)",
 }
 
 
-def _load_market_data(source: str, pair: str):
+def _load_market_data(source: str, pair: str, interval: int = 60):
     """Retourne (data, error). Kraken en lecture seule, ou données démo."""
     if source == "kraken":
         if pair not in KRAKEN_PAIRS:
             return None, f"Paire non autorisée : {pair}"
+        if interval not in KRAKEN_INTERVALS:
+            return None, f"Unité de temps non autorisée : {interval} min (60, 240 ou 1440)."
         try:
-            return fetch_ohlc_dataframe(pair, interval_minutes=60), None
+            return fetch_ohlc_dataframe(pair, interval_minutes=interval), None
         except Exception as exc:
             return None, f"Impossible de récupérer les données Kraken : {exc}"
     return load_csv(DATA_PATH), None
+
+
+def _periods_per_year(source: str, interval: int) -> int:
+    """Annualisation correcte du Sharpe : 252 jours de Bourse pour les données
+    d'exemple, sinon le nombre de barres par an d'un marché crypto 24/7."""
+    return KRAKEN_INTERVALS.get(interval, 8760) if source == "kraken" else 252
+
+
+def _risk_manager(initial_capital, risk_per_trade_pct, stop_loss_pct, take_profit_pct,
+                  max_drawdown_pct, vol_target_pct, no_tp) -> RiskManager:
+    return RiskManager(
+        initial_capital=initial_capital,
+        risk_per_trade_pct=risk_per_trade_pct,
+        stop_loss_pct=stop_loss_pct,
+        # « Laisser courir » : un objectif si lointain qu'il ne se déclenche
+        # jamais, indispensable au suivi de tendance (les gros gains font tout).
+        take_profit_pct=1000.0 if no_tp else take_profit_pct,
+        max_drawdown_pct=max_drawdown_pct,
+        vol_target_pct=vol_target_pct,
+    )
+
+
+def _overlays(strategy: str, strat, data: pd.DataFrame, fast: int, slow: int) -> dict:
+    """Séries à superposer au prix pour VOIR pourquoi la stratégie agit."""
+    close = data["close"].astype(float)
+    out: dict[str, pd.Series] = {}
+    if strategy in ("simple", "filtered", "regime_sma"):
+        out["fast"] = close.rolling(fast).mean()
+        out["slow"] = close.rolling(slow).mean()
+    if strategy in ("donchian", "donchian55"):
+        ch = strat.channels(data)
+        out["upper"], out["lower"] = ch["upper"], ch["lower"]
+    if strategy in ("zscore", "zscore_trend"):
+        mean = close.rolling(strat.period).mean()
+        std = close.rolling(strat.period).std()
+        out["upper"], out["mid"], out["lower"] = mean + strat.entry_z * std, mean, mean - strat.entry_z * std
+    if strategy == "rsi":
+        from avonam.strategy.rsi import compute_rsi
+        out["rsi"] = compute_rsi(close)  # échelle 0-100 : renvoyé pour info, non tracé sur le prix
+    regime = getattr(strat, "regime_period", None) or getattr(strat, "trend_filter_period", None)
+    if strategy == "regime_sma":
+        regime = strat.period
+    if regime:
+        out["regime"] = close.rolling(regime).mean()
+    return out
 
 
 def _downsample_index(n: int, target: int = 320):
@@ -159,62 +214,59 @@ def _downsample_index(n: int, target: int = 320):
 def run_backtest(
     source: str = Query("demo"),
     pair: str = Query("XBTEUR"),
-    strategy: str = Query("simple"),
-    fast_period: int = Query(20, ge=1),
+    strategy: str = Query("trend"),
+    fast_period: int = Query(20, ge=2),
     slow_period: int = Query(50, ge=2),
     initial_capital: float = Query(10_000, gt=0),
     risk_per_trade_pct: float = Query(1.0, gt=0),
     stop_loss_pct: float = Query(2.0, gt=0),
     take_profit_pct: float = Query(4.0, gt=0),
     max_drawdown_pct: float = Query(20.0, gt=0),
+    commission_pct: float = Query(0.26, ge=0, le=5),
+    slippage_pct: float = Query(0.05, ge=0, le=5),
+    vol_target_pct: float = Query(0.0, ge=0, le=300),
+    interval: int = Query(60),
+    allow_short: bool = Query(False),
+    no_tp: bool = Query(False),
 ) -> dict:
     from broker.live.strategy import build_strategy
 
-    if strategy in ("simple", "filtered") and fast_period >= slow_period:
+    if strategy in ("simple", "filtered", "regime_sma") and fast_period >= slow_period:
         return {"error": "La SMA rapide doit être strictement plus courte que la SMA lente."}
 
-    data, error = _load_market_data(source, pair)
+    data, error = _load_market_data(source, pair, interval)
     if error:
         return {"error": error}
 
-    strat = build_strategy(strategy, fast=fast_period, slow=slow_period)
-    risk_manager = RiskManager(
-        initial_capital=initial_capital,
-        risk_per_trade_pct=risk_per_trade_pct,
-        stop_loss_pct=stop_loss_pct,
-        take_profit_pct=take_profit_pct,
-        max_drawdown_pct=max_drawdown_pct,
-    )
-    result = BacktestEngine(risk_manager).run(data, strat)
+    strat = build_strategy(strategy, fast=fast_period, slow=slow_period, allow_short=allow_short)
+    risk_manager = _risk_manager(initial_capital, risk_per_trade_pct, stop_loss_pct, take_profit_pct,
+                                 max_drawdown_pct, vol_target_pct, no_tp)
+    engine = BacktestEngine(risk_manager, commission_pct=commission_pct, slippage_pct=slippage_pct)
+    result = engine.run(data, strat, periods_per_year=_periods_per_year(source, interval))
 
     # Série de prix (sous-échantillonnée) avec les indicateurs superposés,
     # pour VOIR pourquoi la stratégie agit.
     close = data["close"]
     idx = list(_downsample_index(len(data)))
+    overlays = _overlays(strategy, strat, data, fast_period, slow_period)
     price_series = []
-    fast_sma = close.rolling(fast_period).mean()
-    slow_sma = close.rolling(slow_period).mean()
-    rsi_series = None
-    if strategy == "rsi":
-        from avonam.strategy.rsi import compute_rsi
-        rsi_vals = compute_rsi(close)
     for i in idx:
         d = data.index[i]
         row = {"date": d.strftime("%Y-%m-%d %H:%M"), "price": round(float(close.iloc[i]), 2)}
-        if strategy in ("simple", "filtered"):
-            if not pd.isna(fast_sma.iloc[i]):
-                row["fast"] = round(float(fast_sma.iloc[i]), 2)
-            if not pd.isna(slow_sma.iloc[i]):
-                row["slow"] = round(float(slow_sma.iloc[i]), 2)
-        if strategy == "rsi":
-            row["rsi"] = round(float(rsi_vals.iloc[i]), 1)
+        for key, series in overlays.items():
+            v = series.iloc[i]
+            if not pd.isna(v):
+                row[key] = round(float(v), 2)
         price_series.append(row)
 
+    # Entrer en long = acheter, entrer en short = vendre ; la sortie est l'inverse.
     markers = [
-        {"date": t.entry_date.strftime("%Y-%m-%d %H:%M"), "price": round(t.entry_price, 2), "kind": "buy"}
+        {"date": t.entry_date.strftime("%Y-%m-%d %H:%M"), "price": round(t.entry_price, 2),
+         "kind": "buy" if t.side == 1 else "sell"}
         for t in result.trades
     ] + [
-        {"date": t.exit_date.strftime("%Y-%m-%d %H:%M"), "price": round(t.exit_price, 2), "kind": "sell"}
+        {"date": t.exit_date.strftime("%Y-%m-%d %H:%M"), "price": round(t.exit_price, 2),
+         "kind": "sell" if t.side == 1 else "buy"}
         for t in result.trades if t.exit_date
     ]
 
@@ -253,30 +305,114 @@ def compare_strategies(
     source: str = Query("demo"),
     pair: str = Query("XBTEUR"),
     initial_capital: float = Query(10_000, gt=0),
+    risk_per_trade_pct: float = Query(1.0, gt=0),
+    stop_loss_pct: float = Query(2.0, gt=0),
+    take_profit_pct: float = Query(4.0, gt=0),
+    max_drawdown_pct: float = Query(20.0, gt=0),
+    commission_pct: float = Query(0.26, ge=0, le=5),
+    slippage_pct: float = Query(0.05, ge=0, le=5),
+    vol_target_pct: float = Query(0.0, ge=0, le=300),
+    interval: int = Query(60),
+    allow_short: bool = Query(False),
+    no_tp: bool = Query(False),
 ) -> dict:
-    """Compare les trois stratégies sur les mêmes données, côte à côte."""
-    from broker.live.strategy import build_strategy
+    """Compare TOUTES les stratégies sur les mêmes données et les mêmes
+    réglages de risque et de frais, face à la référence « acheter et garder »."""
+    from broker.live.strategy import STRATEGY_NAMES, build_strategy
 
-    data, error = _load_market_data(source, pair)
+    data, error = _load_market_data(source, pair, interval)
     if error:
         return {"error": error}
 
+    ppy = _periods_per_year(source, interval)
     rows = []
-    for name in ("simple", "filtered", "rsi"):
-        strat = build_strategy(name, fast=20, slow=50)
-        result = BacktestEngine(RiskManager(initial_capital=initial_capital)).run(data, strat)
+    for name in STRATEGY_NAMES:
+        strat = build_strategy(name, fast=20, slow=50, allow_short=allow_short)
+        rm = _risk_manager(initial_capital, risk_per_trade_pct, stop_loss_pct, take_profit_pct,
+                           max_drawdown_pct, vol_target_pct, no_tp)
+        result = BacktestEngine(rm, commission_pct=commission_pct, slippage_pct=slippage_pct).run(
+            data, strat, periods_per_year=ppy)
         m = result.metrics
         rows.append({
             "strategy": name,
             "label": STRATEGY_LABELS[name],
             "total_return_pct": round(m["total_return_pct"], 2),
+            "excess_return_pct": round(m["excess_return_pct"], 2),
             "max_drawdown_pct": round(m["max_drawdown_pct"], 2),
             "sharpe_ratio": round(m["sharpe_ratio"], 2),
             "num_trades": m["num_trades"],
+            "fees_paid": round(m["fees_paid"], 2),
+            "exposure_pct": round(m["exposure_pct"], 1),
             "win_rate_pct": round(m["win_rate_pct"], 1),
             "profit_factor": round(m["profit_factor"], 2) if m["profit_factor"] != float("inf") else None,
         })
-    return {"source": source, "pair": pair if source == "kraken" else None, "results": rows}
+    benchmark = round(float(data["close"].iloc[-1] / data["close"].iloc[0] - 1) * 100, 2)
+    return {"source": source, "pair": pair if source == "kraken" else None,
+            "benchmark_return_pct": benchmark, "results": rows}
+
+
+@app.get("/api/walkforward")
+def walkforward_endpoint(
+    source: str = Query("demo"),
+    pair: str = Query("XBTEUR"),
+    strategy: str = Query("trend"),
+    interval: int = Query(1440),
+    commission_pct: float = Query(0.26, ge=0, le=5),
+    slippage_pct: float = Query(0.05, ge=0, le=5),
+    vol_target_pct: float = Query(40.0, ge=0, le=300),
+    stop_loss_pct: float = Query(15.0, gt=0),
+    allow_short: bool = Query(False),
+) -> dict:
+    """Validation HORS ÉCHANTILLON (walk-forward) : choix des réglages sur une
+    fenêtre passée, test sur la fenêtre suivante jamais vue, en glissant dans
+    le temps. `strategy=all` renvoie le résumé de toutes les stratégies."""
+    from avonam.backtest.walkforward import WalkForwardConfig, walk_forward
+    from broker.live.strategy import STRATEGY_NAMES
+
+    data, error = _load_market_data(source, pair, interval)
+    if error:
+        return {"error": error}
+
+    n = len(data)
+    train = max(220, int(n * 0.35))           # la chauffe des indicateurs doit tenir dedans
+    test = max(30, int((n - train) / 5))      # ~5 fenêtres de test
+    if n < train + 2 * test:
+        return {"error": f"Historique trop court ({n} barres) pour une validation fiable. "
+                         "Choisir l'unité de temps « jour » (plus de recul)."}
+    cfg = WalkForwardConfig(
+        train_bars=train, test_bars=test, commission_pct=commission_pct, slippage_pct=slippage_pct,
+        periods_per_year=_periods_per_year(source, interval), vol_target_pct=vol_target_pct,
+        stop_loss_pct=stop_loss_pct, allow_short=allow_short,
+    )
+    meta = {"source": source, "pair": pair if source == "kraken" else None, "interval": interval,
+            "bars": n, "train_bars": train, "test_bars": test, "commission_pct": commission_pct}
+
+    try:
+        if strategy == "all":
+            rows = []
+            for name in STRATEGY_NAMES:
+                # Correction des tests multiples : on compare N stratégies d'un coup.
+                r = walk_forward(data, name, cfg, n_tested=len(STRATEGY_NAMES))
+                rows.append({"strategy": name, "label": STRATEGY_LABELS[name], **r.summary})
+            rows.sort(key=lambda x: x["oos_return_pct"], reverse=True)
+            return {**meta, "strategy": "all", "results": rows}
+
+        if strategy not in STRATEGY_NAMES:
+            return {"error": f"Stratégie inconnue : {strategy}"}
+        r = walk_forward(data, strategy, cfg)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    step = max(1, len(r.oos_curve) // 320)
+    return {
+        **meta,
+        "strategy": strategy,
+        "label": STRATEGY_LABELS[strategy],
+        "summary": r.summary,
+        "folds": [f.__dict__ for f in r.folds],
+        "oos_curve": r.oos_curve[::step],
+        "benchmark_curve": r.benchmark_curve[::step],
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -482,6 +618,18 @@ _PAGE = """<!DOCTYPE html>
   input[type=range] { flex:1; accent-color:var(--accent); }
   .slider-line output { font-size:13px; min-width:48px; text-align:right; }
   .capital-row { margin-top:16px; max-width:220px; }
+  .capital-row[style*="flex-wrap"] { max-width:none; display:flex; align-items:center; font-size:13px; color:var(--muted); }
+  .capital-row select { padding:6px 8px; background:var(--panel-2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:inherit; }
+  .action-row .refresh-btn { margin-left:0; font-size:12.5px; padding:7px 13px; }
+  td.wrap { white-space:normal; min-width:280px; max-width:420px; font-family:inherit; font-size:12px; line-height:1.45; }
+  .wf-verdict { padding:12px 14px; border-radius:9px; font-size:13.5px; line-height:1.55; margin-bottom:12px; background:var(--panel-2); border:1px solid var(--border); }
+  .wf-verdict.good { border-color:rgba(23,195,23,.35); }
+  .wf-verdict.bad { border-color:rgba(230,103,103,.35); }
+  .wf-bh-line { fill:none; stroke:var(--muted); stroke-width:1.5; stroke-dasharray:5 4; }
+  .wf-oos-line { fill:none; stroke:var(--accent-2); stroke-width:2; }
+  .band-line { fill:none; stroke:var(--warn); stroke-width:1.2; stroke-dasharray:4 3; opacity:.85; }
+  .mid-line { fill:none; stroke:var(--muted); stroke-width:1; opacity:.7; }
+  .regime-line { fill:none; stroke:#b38cf0; stroke-width:1.6; opacity:.9; }
   .capital-row label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
   .capital-row input { width:100%; padding:8px; background:var(--panel-2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:"IBM Plex Mono",monospace; }
 
@@ -585,6 +733,9 @@ _PAGE = """<!DOCTYPE html>
         <button type="button" class="pill active" data-source="demo" data-pair="">Données d'exemple</button>
         <button type="button" class="pill" data-source="kraken" data-pair="XBTEUR">Kraken · BTC/EUR</button>
         <button type="button" class="pill" data-source="kraken" data-pair="ETHEUR">Kraken · ETH/EUR</button>
+        <button type="button" class="pill" data-source="kraken" data-pair="SOLEUR">SOL/EUR</button>
+        <button type="button" class="pill" data-source="kraken" data-pair="ADAEUR">ADA/EUR</button>
+        <button type="button" class="pill" data-source="kraken" data-pair="DOTEUR">DOT/EUR</button>
       </div>
       <div class="live-row" id="live-row" style="display:none;">
         <span class="live-dot" id="live-dot"></span>
@@ -595,10 +746,21 @@ _PAGE = """<!DOCTYPE html>
 
       <div style="font-size:12px;color:var(--muted);margin:16px 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Stratégie</div>
       <div class="pills" id="strategy-pills">
-        <button type="button" class="pill active" data-strategy="simple">Moyennes (SMA)</button>
-        <button type="button" class="pill" data-strategy="filtered">SMA filtrée</button>
+        <button type="button" class="pill active" data-strategy="trend">Tendance multi-horizons</button>
+        <button type="button" class="pill" data-strategy="trend_regime">Tendance + régime</button>
+        <button type="button" class="pill" data-strategy="donchian">Donchian 20/10</button>
+        <button type="button" class="pill" data-strategy="donchian55">Donchian 55/20</button>
+        <button type="button" class="pill" data-strategy="regime_sma">SMA + régime</button>
+        <button type="button" class="pill" data-strategy="zscore">Z-score</button>
+        <button type="button" class="pill" data-strategy="zscore_trend">Z-score + tendance</button>
         <button type="button" class="pill" data-strategy="rsi">RSI</button>
-        <button type="button" class="refresh-btn" id="compare-btn" style="margin-left:auto;">Comparer les 3</button>
+        <button type="button" class="pill" data-strategy="filtered">SMA filtrée</button>
+        <button type="button" class="pill" data-strategy="simple">SMA simple</button>
+      </div>
+      <div class="pills action-row" style="margin-top:10px;">
+        <button type="button" class="refresh-btn" id="compare-btn">Comparer toutes les stratégies</button>
+        <button type="button" class="refresh-btn" id="wf-btn">Validation hors échantillon</button>
+        <button type="button" class="refresh-btn" id="wf-all-btn">Valider toutes</button>
       </div>
     </div>
 
@@ -606,11 +768,25 @@ _PAGE = """<!DOCTYPE html>
   </div>
 
   <div id="compare-panel" class="panel" style="display:none;">
-    <div style="font-size:13px;font-weight:600;margin-bottom:10px;">Comparaison des stratégies (mêmes données)</div>
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px;">Comparaison des stratégies (mêmes données, mêmes frais)</div>
+    <div class="muted-note" id="compare-bh" style="margin-bottom:10px;"></div>
     <div class="table-scroll"><table id="compare-table"><thead><tr>
-      <th>Stratégie</th><th>Rendement</th><th>Drawdown max</th><th>Sharpe</th><th>Trades</th><th>Win rate</th><th>Profit factor</th>
+      <th>Stratégie</th><th>Rendement</th><th>vs acheter-garder</th><th>Drawdown max</th><th>Sharpe</th><th>Trades</th><th>Frais payés</th><th>Exposition</th>
     </tr></thead><tbody></tbody></table></div>
-    <p class="muted-note">Rappel : un meilleur score sur ces données passées ne garantit rien pour l'avenir. C'est un outil de comparaison, pas une prédiction.</p>
+    <p class="muted-note">Rappel : c'est UN historique. Le meilleur score ici peut être un coup de chance. Pour juger vraiment, utilise la validation hors échantillon.</p>
+  </div>
+
+  <div id="wf-panel" class="panel" style="display:none;">
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px;">Validation hors échantillon (walk-forward)</div>
+    <div class="muted-note" id="wf-meta" style="margin-bottom:10px;"></div>
+    <div id="wf-verdict" class="wf-verdict"></div>
+    <div class="stats" id="wf-stats"></div>
+    <div id="wf-chart-box" style="margin-top:14px;">
+      <div class="chart-title-row">Performance hors échantillon (base 100) <span class="chart-legend"><span style="color:var(--accent-2)">— stratégie</span> · <span style="color:var(--muted)">— acheter et garder</span></span></div>
+      <svg id="wf-chart" viewBox="0 0 1000 260" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="table-scroll" style="margin-top:12px;"><table id="wf-table"><thead></thead><tbody></tbody></table></div>
+    <p class="muted-note">Principe : pour chaque fenêtre, les réglages sont choisis sur la période PASSÉE, puis testés sans modification sur la période SUIVANTE que la stratégie n'a jamais vue. Seul ce résultat hors échantillon est une estimation honnête. Frais Kraken réels inclus. Conseil : unité de temps « jour » pour avoir assez de recul.</p>
   </div>
 
   <div id="crypto-analysis">
@@ -641,6 +817,25 @@ _PAGE = """<!DOCTYPE html>
         <label>Drawdown max <span class="info" tabindex="0" data-tip="Si le capital chute de plus de ce pourcentage depuis son plus haut, la stratégie arrête d'ouvrir de nouvelles positions (kill switch).">?</span></label>
         <div class="slider-line"><input type="range" id="max_drawdown_pct" min="5" max="50" step="1" value="20"><output>20%</output></div>
       </div>
+      <div class="slider-row">
+        <label>Frais par ordre <span class="info" tabindex="0" data-tip="Commission payée à chaque achat ET à chaque vente. Kraken facture environ 0,26 % en ordre au marché (taker). Mettre 0 donne des résultats irréalistes et trompeurs.">?</span></label>
+        <div class="slider-line"><input type="range" id="commission_pct" min="0" max="1" step="0.01" value="0.26"><output>0.26%</output></div>
+      </div>
+      <div class="slider-row">
+        <label>Volatilité cible <span class="info" tabindex="0" data-tip="0 = taille calculée depuis le stop-loss. Sinon, la taille de position vise cette volatilité annuelle (ex. 40 %) : plus l'actif est agité, plus la position est petite. Technique très robuste pour stabiliser le risque.">?</span></label>
+        <div class="slider-line"><input type="range" id="vol_target_pct" min="0" max="100" step="5" value="0"><output>0% (off)</output></div>
+      </div>
+    </div>
+    <div class="capital-row" style="flex-wrap:wrap;gap:14px;">
+      <label>Unité de temps (Kraken)
+        <select id="interval" style="margin-left:6px;">
+          <option value="60" selected>1 heure (30 jours)</option>
+          <option value="240">4 heures (4 mois)</option>
+          <option value="1440">1 jour (2 ans)</option>
+        </select>
+      </label>
+      <label class="toggle"><input type="checkbox" id="no_tp"> Laisser courir les gains (pas de take-profit)</label>
+      <label class="toggle"><input type="checkbox" id="allow_short"> Autoriser les ventes à découvert (short)</label>
     </div>
     <div class="capital-row">
       <label>Capital initial (€)</label>
@@ -717,7 +912,7 @@ const priceLegend = document.getElementById('price-legend');
 const strategyPillsEl = document.getElementById('strategy-pills');
 const compareBtn = document.getElementById('compare-btn');
 const comparePanel = document.getElementById('compare-panel');
-let currentStrategy = 'simple';
+let currentStrategy = 'trend';
 
 strategyPillsEl.addEventListener('click', e => {
   const btn = e.target.closest('.pill');
@@ -728,28 +923,160 @@ strategyPillsEl.addEventListener('click', e => {
   runBacktest();
 });
 
+const SLIDER_IDS = ['fast_period','slow_period','risk_per_trade_pct','stop_loss_pct','take_profit_pct','max_drawdown_pct','commission_pct','vol_target_pct'];
+const SLIDER_SUFFIX = { fast_period:'', slow_period:'', risk_per_trade_pct:'%', stop_loss_pct:'%', take_profit_pct:'%', max_drawdown_pct:'%', commission_pct:'%', vol_target_pct:'%' };
+
+function sliderText(id, v) {
+  if (id.includes('period')) return v;
+  if (id === 'commission_pct') return parseFloat(v).toFixed(2) + '%';
+  if (id === 'vol_target_pct') return +v === 0 ? '0% (off)' : v + '%';
+  return parseFloat(v).toFixed(1) + SLIDER_SUFFIX[id];
+}
+
+// Paramètres communs à toutes les requêtes (backtest, comparaison).
+function buildParams(extra) {
+  const p = new URLSearchParams({
+    source: state.source, pair: state.pair, initial_capital: capitalInput.value,
+    interval: document.getElementById('interval').value,
+    no_tp: document.getElementById('no_tp').checked,
+    allow_short: document.getElementById('allow_short').checked,
+  });
+  SLIDER_IDS.forEach(id => p.set(id, document.getElementById(id).value));
+  if (extra) for (const k in extra) p.set(k, extra[k]);
+  return p;
+}
+
 compareBtn.addEventListener('click', async () => {
-  const params = new URLSearchParams({ source: state.source, pair: state.pair, initial_capital: capitalInput.value });
-  compareBtn.textContent = '...';
-  const resp = await fetch('/api/compare?' + params.toString());
-  const d = await resp.json();
-  compareBtn.textContent = 'Comparer les 3';
+  const label = compareBtn.textContent;
+  compareBtn.textContent = 'Calcul en cours…';
+  const d = await (await fetch('/api/compare?' + buildParams().toString())).json();
+  compareBtn.textContent = label;
   if (d.error) { alert(d.error); return; }
+  document.getElementById('compare-bh').innerHTML =
+    `Référence « acheter et garder » sur la même période : <b class="${d.benchmark_return_pct >= 0 ? 'good' : 'critical'}">${d.benchmark_return_pct}%</b>. Une stratégie n'a d'intérêt que si elle fait mieux, ou aussi bien avec moins de risque.`;
   const body = document.querySelector('#compare-table tbody');
   const best = Math.max(...d.results.map(r => r.total_return_pct));
   body.innerHTML = d.results.map(r => `
     <tr>
       <td>${r.label}${r.total_return_pct === best ? ' ★' : ''}</td>
       <td class="${r.total_return_pct >= 0 ? 'good' : 'critical'}">${r.total_return_pct}%</td>
+      <td class="${r.excess_return_pct >= 0 ? 'good' : 'critical'}">${r.excess_return_pct >= 0 ? '+' : ''}${r.excess_return_pct}%</td>
       <td class="critical">${r.max_drawdown_pct}%</td>
-      <td>${r.sharpe_ratio}</td><td>${r.num_trades}</td><td>${r.win_rate_pct}%</td>
-      <td>${r.profit_factor ?? '∞'}</td>
+      <td>${r.sharpe_ratio}</td><td>${r.num_trades}</td>
+      <td class="critical">${fmt(r.fees_paid)} €</td><td>${r.exposure_pct}%</td>
     </tr>`).join('');
   comparePanel.style.display = 'block';
 });
 
-const SLIDER_IDS = ['fast_period','slow_period','risk_per_trade_pct','stop_loss_pct','take_profit_pct','max_drawdown_pct'];
-const SLIDER_SUFFIX = { fast_period:'', slow_period:'', risk_per_trade_pct:'%', stop_loss_pct:'%', take_profit_pct:'%', max_drawdown_pct:'%' };
+// -- validation hors échantillon (walk-forward) --
+const wfPanel = document.getElementById('wf-panel');
+const wfBtn = document.getElementById('wf-btn');
+const wfAllBtn = document.getElementById('wf-all-btn');
+
+function paramsText(p) {
+  const keys = Object.keys(p || {});
+  if (!keys.length) return 'défaut';
+  return keys.map(k => (k === 'fast' ? 'rapide ' : k === 'slow' ? 'lente ' : k + ' ') + p[k]).join(', ');
+}
+
+function renderWfChart(oos, bh) {
+  const svgEl = document.getElementById('wf-chart');
+  svgEl.innerHTML = '';
+  if (!oos || oos.length < 2) return;
+  const W = 1000, H = 260, padL = 50, padR = 12, padT = 12, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const ns = 'http://www.w3.org/2000/svg';
+  const el = (t, a) => { const e = document.createElementNS(ns, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const all = oos.map(p => p.value).concat(bh.map(p => p.value));
+  const minV = Math.min(...all, 100), maxV = Math.max(...all, 100), span = (maxV - minV) || 1;
+  const xAt = i => padL + (i / (oos.length - 1)) * plotW;
+  const yAt = v => padT + plotH - ((v - minV) / span) * plotH;
+  for (let s = 0; s <= 3; s++) {
+    const v = minV + span * s / 3, y = yAt(v);
+    svgEl.appendChild(el('line', { x1:padL, x2:W-padR, y1:y, y2:y, class:'gridline' }));
+    const t = el('text', { x:4, y:y+4 }); t.textContent = Math.round(v); svgEl.appendChild(t);
+  }
+  svgEl.appendChild(el('line', { x1:padL, x2:W-padR, y1:yAt(100), y2:yAt(100), class:'baseline' }));
+  const line = (pts, cls) => {
+    let d = ''; pts.forEach((p, i) => { d += (i ? 'L' : 'M') + ` ${xAt(i)} ${yAt(p.value)} `; });
+    svgEl.appendChild(el('path', { d, class: cls }));
+  };
+  line(bh, 'wf-bh-line');
+  line(oos, 'wf-oos-line');
+  svgEl.appendChild(el('text', { x:padL, y:H-6 })).textContent = oos[0].date;
+  svgEl.appendChild(el('text', { x:W-padR, y:H-6, 'text-anchor':'end' })).textContent = oos[oos.length-1].date;
+}
+
+async function runWalkForward(strategy) {
+  const btn = strategy === 'all' ? wfAllBtn : wfBtn;
+  const label = btn.textContent;
+  btn.textContent = 'Validation en cours…';
+  // Le recul compte : l'unité « jour » (2 ans d'historique) est recommandée.
+  const sel = document.getElementById('interval').value;
+  const p = new URLSearchParams({
+    source: state.source, pair: state.pair, strategy,
+    interval: sel === '60' ? '1440' : sel,
+    commission_pct: document.getElementById('commission_pct').value,
+    allow_short: document.getElementById('allow_short').checked,
+  });
+  const vt = document.getElementById('vol_target_pct').value;
+  if (+vt > 0) p.set('vol_target_pct', vt);
+  let d;
+  try { d = await (await fetch('/api/walkforward?' + p.toString())).json(); }
+  catch (e) { alert('Validation impossible (réseau) : ' + e); return; }
+  finally { btn.textContent = label; }
+  if (d.error) { alert(d.error); return; }
+
+  const unit = { 60: 'heures', 240: 'barres de 4 h', 1440: 'jours' }[d.interval] || 'barres';
+  const src = d.source === 'kraken' ? `Kraken ${d.pair}` : 'données d\\'exemple';
+  document.getElementById('wf-meta').textContent =
+    `${src} · ${d.bars} ${d.source === 'kraken' ? unit : 'barres'} · entraînement ${d.train_bars}, test ${d.test_bars} par fenêtre · frais ${d.commission_pct}% par ordre`;
+
+  const verdictEl = document.getElementById('wf-verdict');
+  const statsBox = document.getElementById('wf-stats');
+  const chartBox = document.getElementById('wf-chart-box');
+  const thead = document.querySelector('#wf-table thead');
+  const tbodyWf = document.querySelector('#wf-table tbody');
+  const pct = v => `<span class="${v >= 0 ? 'good' : 'critical'}">${v >= 0 ? '+' : ''}${v}%</span>`;
+
+  if (strategy === 'all') {
+    verdictEl.className = 'wf-verdict';
+    verdictEl.innerHTML = '<b>Classement hors échantillon.</b> Attention au piège des tests multiples : en comparant 10 stratégies, l\\'une d\\'elles paraîtra bonne par pur hasard. Le seuil de significativité est donc relevé (colonne t). Seule une stratégie qui GAGNE, bat « acheter et garder » ET passe ce seuil mérite d\\'aller en SHADOW.';
+    statsBox.innerHTML = '';
+    chartBox.style.display = 'none';
+    thead.innerHTML = '<tr><th>Stratégie</th><th>Hors échantillon</th><th>Acheter-garder</th><th>Excès</th><th>Sharpe test</th><th>Significativité t</th><th>Fenêtres gagnantes</th><th>Verdict</th></tr>';
+    tbodyWf.innerHTML = d.results.map(r => `
+      <tr><td>${r.label}</td><td>${pct(r.oos_return_pct)}</td><td>${pct(r.benchmark_return_pct)}</td>
+      <td>${pct(r.excess_return_pct)}</td><td>${r.avg_test_sharpe}</td>
+      <td class="${r.significant ? 'good' : ''}">${r.t_stat} / ${r.t_required}</td>
+      <td>${r.positive_folds}/${r.folds}</td><td class="wrap">${r.verdict}</td></tr>`).join('');
+  } else {
+    const s = d.summary;
+    const good = s.oos_return_pct > 0 && s.excess_return_pct > 0 && s.avg_test_sharpe > 0 && s.significant;
+    verdictEl.className = 'wf-verdict ' + (good ? 'good' : 'bad');
+    verdictEl.innerHTML = `<b>${d.label} — verdict :</b> ${s.verdict}`;
+    statsBox.innerHTML = `
+      <div class="stat"><div class="label">Hors échantillon</div><div class="value ${s.oos_return_pct >= 0 ? 'good' : 'critical'}">${s.oos_return_pct}%</div></div>
+      <div class="stat"><div class="label">Acheter et garder</div><div class="value ${s.benchmark_return_pct >= 0 ? 'good' : 'critical'}">${s.benchmark_return_pct}%</div></div>
+      <div class="stat"><div class="label">Excès</div><div class="value ${s.excess_return_pct >= 0 ? 'good' : 'critical'}">${s.excess_return_pct}%</div></div>
+      <div class="stat"><div class="label">Sharpe entraînement → test</div><div class="value">${s.avg_train_sharpe} → ${s.avg_test_sharpe}</div></div>
+      <div class="stat"><div class="label">Écart (sur-optimisation)</div><div class="value">${s.overfitting_gap}</div></div>
+      <div class="stat"><div class="label">Fenêtres gagnantes</div><div class="value">${s.positive_folds}/${s.folds}</div></div>
+      <div class="stat"><div class="label">Significativité t (seuil)</div><div class="value ${s.significant ? 'good' : 'critical'}">${s.t_stat} (${s.t_required})</div></div>`;
+    chartBox.style.display = '';
+    renderWfChart(d.oos_curve, d.benchmark_curve);
+    thead.innerHTML = '<tr><th>Période de test</th><th>Réglage choisi (sur le passé)</th><th>Sharpe entraînement</th><th>Sharpe test</th><th>Rendement test</th><th>Acheter-garder</th><th>Trades</th></tr>';
+    tbodyWf.innerHTML = d.folds.map(f => `
+      <tr><td>${f.test_start.slice(0,10)} → ${f.test_end.slice(0,10)}</td><td>${paramsText(f.best_params)}</td>
+      <td>${f.train_sharpe}</td><td>${f.test_sharpe}</td><td>${pct(f.test_return_pct)}</td>
+      <td>${pct(f.benchmark_return_pct)}</td><td>${f.test_trades}</td></tr>`).join('');
+  }
+  wfPanel.style.display = 'block';
+  wfPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+wfBtn.addEventListener('click', () => runWalkForward(currentStrategy));
+wfAllBtn.addEventListener('click', () => runWalkForward('all'));
 
 // -- classes d'actifs : crypto disponible, actions/matières premières à venir --
 const assetPillsEl = document.getElementById('asset-pills');
@@ -806,11 +1133,12 @@ SLIDER_IDS.forEach(id => {
   const input = document.getElementById(id);
   const output = input.nextElementSibling;
   input.addEventListener('input', () => {
-    output.textContent = (id.includes('period') ? input.value : parseFloat(input.value).toFixed(1)) + SLIDER_SUFFIX[id];
+    output.textContent = sliderText(id, input.value);
     scheduleRun();
   });
 });
 capitalInput.addEventListener('input', scheduleRun);
+['interval', 'no_tp', 'allow_short'].forEach(id => document.getElementById(id).addEventListener('change', scheduleRun));
 
 function scheduleRun() {
   clearTimeout(debounceTimer);
@@ -913,6 +1241,10 @@ function renderStats(m) {
   const cls = v => v >= 0 ? 'good' : 'critical';
   statsEl.innerHTML = `
     <div class="stat"><div class="label">Rendement total <span class="info" tabindex="0" data-tip="Variation du capital sur toute la période, en %. Positif = gain, négatif = perte.">?</span></div><div class="value ${cls(m.total_return_pct)}">${fmt(m.total_return_pct)}%</div></div>
+    <div class="stat"><div class="label">Acheter et garder <span class="info" tabindex="0" data-tip="Ce qu'aurait rapporté le simple fait d'acheter l'actif au début et de le garder. C'est LA référence : une stratégie qui fait moins bien n'a pas d'intérêt.">?</span></div><div class="value ${cls(m.benchmark_return_pct)}">${fmt(m.benchmark_return_pct)}%</div></div>
+    <div class="stat"><div class="label">Excès vs référence <span class="info" tabindex="0" data-tip="Rendement de la stratégie moins celui d'acheter et garder. Attention : dans un marché qui baisse, rester hors du marché « bat » la référence en perdant moins, ce n'est pas un vrai gain.">?</span></div><div class="value ${cls(m.excess_return_pct)}">${fmt(m.excess_return_pct)}%</div></div>
+    <div class="stat"><div class="label">Frais payés <span class="info" tabindex="0" data-tip="Total des commissions payées sur la période. C'est souvent ce qui transforme une stratégie gagnante sur le papier en stratégie perdante.">?</span></div><div class="value critical">${fmt(m.fees_paid)} €</div></div>
+    <div class="stat"><div class="label">Exposition <span class="info" tabindex="0" data-tip="Part du temps passé avec une position ouverte. Une faible exposition réduit le risque, mais aussi les gains possibles.">?</span></div><div class="value">${fmt(m.exposure_pct)}%</div></div>
     <div class="stat"><div class="label">Espérance / trade <span class="info" tabindex="0" data-tip="Gain moyen attendu par trade, combinant fréquence et taille des gains/pertes. Positif = la stratégie gagne en moyenne.">?</span></div><div class="value ${cls(m.expectancy)}">${fmt(m.expectancy)}</div></div>
     <div class="stat"><div class="label">Drawdown max <span class="info" tabindex="0" data-tip="Pire chute du capital depuis son plus haut. Un chiffre élevé est difficile à supporter psychologiquement.">?</span></div><div class="value critical">${fmt(m.max_drawdown_pct)}%</div></div>
     <div class="stat"><div class="label">Durée du drawdown <span class="info" tabindex="0" data-tip="Plus longue série de barres passées sous un précédent sommet : combien de temps la stratégie reste dans le rouge avant de se refaire.">?</span></div><div class="value">${m.max_drawdown_duration}</div></div>
@@ -957,7 +1289,9 @@ function renderPriceChart(series, markers, strategy) {
     if (d) priceChart.appendChild(el('path', { d, class: cls }));
   }
   path('price', 'price-line');
-  if (strategy === 'simple' || strategy === 'filtered') { path('fast', 'sma-fast'); path('slow', 'sma-slow'); }
+  path('fast', 'sma-fast'); path('slow', 'sma-slow');
+  path('upper', 'band-line'); path('lower', 'band-line'); path('mid', 'mid-line');
+  path('regime', 'regime-line');
 
   (markers || []).forEach(mk => {
     const x = dateToX[mk.date];
@@ -968,11 +1302,19 @@ function renderPriceChart(series, markers, strategy) {
   priceChart.appendChild(el('text', { x:padL, y:H-6 })).textContent = series[0].date;
   priceChart.appendChild(el('text', { x:W-padR, y:H-6, 'text-anchor':'end' })).textContent = series[series.length-1].date;
 
-  if (strategy === 'rsi') {
-    priceLegend.innerHTML = '<b style="color:var(--text)">— prix</b> · <span style="color:var(--good)">● achat</span> · <span style="color:var(--critical)">● vente</span> · RSI : achat en survente, vente en surachat';
-  } else {
-    priceLegend.innerHTML = '<b style="color:var(--text)">— prix</b> · <span style="color:var(--accent-2)">— SMA rapide</span> · <span style="color:var(--warn)">— SMA lente</span> · <span style="color:var(--good)">● achat</span> · <span style="color:var(--critical)">● vente</span>';
-  }
+  // Légende construite selon les séries réellement présentes.
+  const has = k => series.some(p => p[k] != null);
+  const parts = ['<b style="color:var(--text)">— prix</b>'];
+  if (has('fast')) parts.push('<span style="color:var(--accent-2)">— SMA rapide</span>');
+  if (has('slow')) parts.push('<span style="color:var(--warn)">— SMA lente</span>');
+  if (has('upper')) parts.push(strategy.startsWith('donchian')
+    ? '<span style="color:var(--warn)">-- canal de cassure</span>'
+    : '<span style="color:var(--warn)">-- bandes (±z)</span>');
+  if (has('regime')) parts.push('<span style="color:#b38cf0">— moyenne de régime</span>');
+  parts.push('<span style="color:var(--good)">● achat</span>', '<span style="color:var(--critical)">● vente</span>');
+  if (strategy === 'rsi') parts.push('RSI : achat en survente, vente en surachat');
+  if (strategy === 'trend' || strategy === 'trend_regime') parts.push('vote de 4 horizons, entrée si large majorité');
+  priceLegend.innerHTML = parts.join(' · ');
 }
 
 function renderTrades(trades) {
@@ -987,8 +1329,7 @@ function renderTrades(trades) {
 }
 
 async function runBacktest() {
-  const params = new URLSearchParams({ source: state.source, pair: state.pair, strategy: currentStrategy, initial_capital: capitalInput.value });
-  SLIDER_IDS.forEach(id => params.set(id, document.getElementById(id).value));
+  const params = buildParams({ strategy: currentStrategy });
 
   errorBannerEl.classList.remove('show');
   const resp = await fetch('/api/backtest?' + params.toString());
@@ -1601,7 +1942,8 @@ _LEARN_PAGE = """<!DOCTYPE html>
     <a href="#frais">6. Les frais</a>
     <a href="#psycho">7. La psychologie</a>
     <a href="#verites">8. Les vérités qui dérangent</a>
-    <a href="#gloss">9. Glossaire</a>
+    <a href="#pro">9. Les techniques des professionnels</a>
+    <a href="#gloss">10. Glossaire</a>
   </aside>
 
   <article>
@@ -1694,8 +2036,34 @@ _LEARN_PAGE = """<!DOCTYPE html>
       <p>Ce site existe pour apprendre et expérimenter en sécurité, pas pour te faire croire à une machine à gagner. C'est précisément parce qu'il est honnête sur tout ça qu'on peut lui faire confiance pour le reste.</p>
     </section>
 
+    <section id="pro">
+      <h2>9. Les techniques des professionnels (et comment ne pas se mentir)</h2>
+      <p>Empiler des indicateurs ne crée pas d'avantage. Ce que la recherche en finance quantitative documente vraiment comme robuste tient en quelques idées, toutes disponibles dans le tableau de bord et dans le robot.</p>
+      <ul>
+        <li><b>Le suivi de tendance multi-horizons.</b> Un actif qui a monté a statistiquement tendance à continuer (« time-series momentum », Moskowitz, Ooi et Pedersen, 2012, observé sur des décennies et de nombreux marchés). Plutôt que de parier sur UNE fenêtre choisie après coup, on fait voter plusieurs horizons (20, 50, 100, 200 barres) : c'est beaucoup plus robuste.</li>
+        <li><b>L'hystérésis.</b> On entre quand une large majorité d'horizons est haussière, mais on ne sort que quand elle s'effondre vraiment. Cet écart évite les allers-retours sur chaque petite oscillation. Moins de trades, donc beaucoup moins de frais : c'est souvent la différence entre rentable sur le papier et rentable pour de vrai.</li>
+        <li><b>La cassure de canal (Donchian).</b> Le système des célèbres « Turtle Traders » : acheter quand le prix dépasse son plus haut des 20 derniers jours, sortir quand il passe sous son plus bas des 10. Beaucoup de petites pertes, quelques gros gains qui paient tout. Pour ça, il ne faut surtout pas plafonner les gains : coche « laisser courir ».</li>
+        <li><b>Le filtre de régime.</b> N'être acheteur que si le prix est au-dessus de sa moyenne longue (200 barres). Un peu moins de gain dans les phases haussières, mais des pertes nettement réduites dans les marchés baissiers prolongés (Faber, 2007).</li>
+        <li><b>La taille par volatilité cible.</b> Au lieu de miser toujours la même somme, on vise un niveau de risque constant : plus l'actif est agité, plus la position est petite. C'est l'une des améliorations les mieux documentées (Moreira et Muir, 2017).</li>
+        <li><b>Le momentum ajusté du risque.</b> Pour choisir entre plusieurs cryptos, le robot préfère une hausse nette et régulière à une hausse obtenue dans le chaos : il classe par rendement divisé par volatilité.</li>
+        <li><b>Le retour à la moyenne (z-score).</b> L'inverse : parier que les excès se corrigent. Il marche dans les marchés qui oscillent et perd dans les tendances. En crypto, il est souvent mangé par les frais. Il est là surtout pour comparer.</li>
+      </ul>
+      <p><b>Comment ne pas se mentir : la validation hors échantillon.</b> Le piège numéro un est de régler une stratégie sur le passé jusqu'à ce qu'elle paraisse parfaite. Elle colle alors au passé et s'effondre en réel. La parade des professionnels, le « walk-forward » : choisir les réglages sur une période, les tester sans y toucher sur la période SUIVANTE que la stratégie n'a jamais vue, puis glisser dans le temps. Seul ce résultat compte.</p>
+      <p><b>Le piège des tests multiples.</b> Compare dix stratégies sur les mêmes données, et l'une d'elles paraîtra excellente par pur hasard. C'est exactement comme ça qu'on se fait avoir. Le tableau de bord mesure donc la <b>significativité statistique</b> (le « t ») et relève le seuil quand on compare plusieurs stratégies à la fois. Retiens l'ordre de grandeur : t ≈ Sharpe × √années. Un Sharpe de 1 sur un an ne prouve presque rien ; il faut de la durée.</p>
+      <p><b>Et toujours la référence.</b> Une stratégie qui fait moins bien que simplement acheter et garder l'actif n'a aucun intérêt. Et attention : dans un marché qui baisse, rester hors du marché « bat » la référence en perdant moins. Perdre moins n'est pas gagner.</p>
+      <div class="callout warn">
+        <b>La démarche recommandée, dans l'ordre.</b>
+        <ol style="margin:8px 0 0;">
+          <li>Dans le tableau de bord, choisis une paire Kraken et clique <b>« Valider toutes »</b> (unité de temps : jour, pour avoir deux ans de recul).</li>
+          <li>Ne retiens qu'une stratégie qui <b>gagne</b>, <b>bat acheter-et-garder</b> ET <b>passe le seuil de significativité</b>. Si aucune ne le fait, c'est une réponse honnête : ne pas trader est alors le meilleur choix.</li>
+          <li>Fais-la tourner en <b>SHADOW</b> plusieurs semaines (<code>AVONAM_STRATEGY</code> sur le worker, <code>AVONAM_MODE=shadow</code>).</li>
+          <li>Seulement ensuite, du réel, avec de petits montants et les stops.</li>
+        </ol>
+      </div>
+    </section>
+
     <section id="gloss">
-      <h2>9. Glossaire express</h2>
+      <h2>10. Glossaire express</h2>
       <table class="gloss">
         <tr><td>Actif</td><td>Ce qu'on achète/vend : une action, une crypto, une matière première...</td></tr>
         <tr><td>Bougie (chandelier)</td><td>Un rectangle qui résume le prix sur une période (ouverture, plus haut, plus bas, clôture).</td></tr>

@@ -100,13 +100,16 @@ def trade_stats(trades: list) -> dict:
     }
 
 
-def compute_all_metrics(equity_curve: pd.Series, trades: list) -> dict:
+def compute_all_metrics(equity_curve: pd.Series, trades: list, periods_per_year: int = 252) -> dict:
+    """`periods_per_year` : 252 (jours de Bourse), 365 (jours crypto),
+    8760 (heures crypto)... Une mauvaise annualisation fausse le Sharpe d'un
+    facteur racine du rapport, d'où l'importance de le passer correctement."""
     metrics = {
         "total_return_pct": total_return_pct(equity_curve),
         "max_drawdown_pct": max_drawdown_pct(equity_curve),
         "max_drawdown_duration": max_drawdown_duration(equity_curve),
-        "sharpe_ratio": sharpe_ratio(equity_curve),
-        "sortino_ratio": sortino_ratio(equity_curve),
+        "sharpe_ratio": sharpe_ratio(equity_curve, periods_per_year=periods_per_year),
+        "sortino_ratio": sortino_ratio(equity_curve, periods_per_year=periods_per_year),
     }
     metrics.update(trade_stats(trades))
     return metrics

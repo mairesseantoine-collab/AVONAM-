@@ -66,10 +66,12 @@ class BacktestEngine:
         risk_manager: RiskManager,
         commission_pct: float = 0.05,
         slippage_pct: float = 0.05,
+        vol_window: int = 20,
     ) -> None:
         self.risk_manager = risk_manager
         self.commission_pct = commission_pct
         self.slippage_pct = slippage_pct
+        self.vol_window = vol_window  # fenêtre d'estimation de la volatilité (dimensionnement par volatilité)
         self.reset()
 
     def reset(self) -> None:
@@ -86,6 +88,9 @@ class BacktestEngine:
         self.trades: list[Trade] = []
         self._equity_dates: list = []
         self._equity_values: list[float] = []
+        self.fees_paid = 0.0        # total des commissions payées (le poste qui tue les stratégies trop actives)
+        self._bars_in_market = 0    # pour le temps d'exposition
+        self._bars_total = 0
 
     # -- exécution simulée -------------------------------------------------
 
@@ -98,14 +103,15 @@ class BacktestEngine:
     def _commission(self, notional: float) -> float:
         return notional * (self.commission_pct / 100)
 
-    def _open_position(self, date, side: int, ref_price: float) -> None:
+    def _open_position(self, date, side: int, ref_price: float, volatility: float | None = None) -> None:
         fill = self._buy_fill(ref_price) if side == 1 else self._sell_fill(ref_price)
-        units = self.risk_manager.position_size(self.cash, fill, side)
+        units = self.risk_manager.position_size(self.cash, fill, side, volatility=volatility)
         if units <= 0:
             return
 
         notional = units * fill
         commission = self._commission(notional)
+        self.fees_paid += commission
         self._cash_before_open = self.cash  # référence pour calculer le P&L à la fermeture
 
         if side == 1:
@@ -124,6 +130,7 @@ class BacktestEngine:
         fill = self._sell_fill(exit_price) if trade.side == 1 else self._buy_fill(exit_price)
         notional = trade.units * fill
         commission = self._commission(notional)
+        self.fees_paid += commission
 
         if trade.side == 1:
             self.cash += notional - commission
@@ -151,9 +158,11 @@ class BacktestEngine:
 
     # -- traitement barre par barre (partagé backtest / paper trading) ----
 
-    def process_bar(self, date, bar: pd.Series, desired_side: int) -> None:
+    def process_bar(self, date, bar: pd.Series, desired_side: int, volatility: float | None = None) -> None:
         """Traite une barre OHLCV avec le signal désiré (déjà décalé d'une
-        barre par l'appelant pour éviter le look-ahead bias).
+        barre par l'appelant pour éviter le look-ahead bias). `volatility` est
+        la volatilité annualisée connue AVANT cette barre, utilisée seulement
+        si le RiskManager dimensionne par volatilité cible.
         """
         # 1. Stop-loss / take-profit, vérifiés en premier : dans la réalité,
         #    ils peuvent se déclencher indépendamment du signal de la
@@ -171,13 +180,16 @@ class BacktestEngine:
 
         # 3. Entrée sur nouveau signal, sauf si le kill switch est actif.
         if self.open_trade is None and desired_side != 0 and not self.halted:
-            self._open_position(date, desired_side, bar["open"])
+            self._open_position(date, desired_side, bar["open"], volatility=volatility)
 
         # 4. Mark-to-market + mise à jour du drawdown / kill switch.
         equity = self._mark_to_market(bar["close"])
         self._equity_dates.append(date)
         self._equity_values.append(equity)
         self.equity_peak = max(self.equity_peak, equity)
+        self._bars_total += 1
+        if self.open_trade is not None:
+            self._bars_in_market += 1
 
         if not self.halted and self.risk_manager.check_max_drawdown(self.equity_peak, equity):
             self.halted = True
@@ -185,18 +197,47 @@ class BacktestEngine:
 
     # -- backtest "en bloc" -------------------------------------------------
 
-    def run(self, data: pd.DataFrame, strategy: Strategy) -> BacktestResult:
+    def run(self, data: pd.DataFrame, strategy: Strategy, periods_per_year: int = 252) -> BacktestResult:
+        """`periods_per_year` sert à annualiser Sharpe/Sortino et la
+        volatilité : 252 pour des jours de Bourse, 365 pour des jours crypto
+        (24/7), 8760 pour des heures crypto, 2190 pour des barres de 4 h."""
         self.reset()
         signals = strategy.generate_signals(data)
 
+        # Volatilité annualisée connue à la clôture de chaque barre ; la
+        # décision exécutée à la barre i utilise celle de i-1 (pas de look-ahead).
+        vol = None
+        if self.risk_manager.vol_target_pct > 0:
+            rets = data["close"].astype(float).pct_change()
+            vol = (rets.rolling(self.vol_window).std() * (periods_per_year ** 0.5)).to_numpy()
+
+        # Lecture des barres en bloc (dictionnaires) plutôt que `data.iloc[i]`
+        # à chaque itération : même logique, plusieurs fois plus rapide, ce qui
+        # compte pour la validation walk-forward qui enchaîne des dizaines de runs.
+        bars = data[["open", "high", "low", "close"]].astype(float).to_dict("records")
+        sig = signals.to_numpy()
+        index = data.index
         for i in range(1, len(data)):
-            date = data.index[i]
-            bar = data.iloc[i]
-            desired_side = int(signals.iloc[i - 1])  # décision prise sur la barre précédente
-            self.process_bar(date, bar, desired_side)
+            desired_side = int(sig[i - 1])  # décision prise sur la barre précédente
+            v = None
+            if vol is not None:
+                prev = vol[i - 1]
+                v = None if prev != prev else float(prev)  # NaN → pas encore d'estimation
+            self.process_bar(index[i], bars[i], desired_side, volatility=v)
 
         equity_curve = pd.Series(self._equity_values, index=pd.Index(self._equity_dates), name="equity")
-        metrics = compute_all_metrics(equity_curve, self.trades)
+        metrics = compute_all_metrics(equity_curve, self.trades, periods_per_year=periods_per_year)
+
+        # Métriques de réalisme : frais payés, temps passé en position, et
+        # surtout la RÉFÉRENCE « acheter et garder » sur la même période. Une
+        # stratégie qui fait moins bien que simplement détenir l'actif n'a pas
+        # d'intérêt, quel que soit son raffinement.
+        close = data["close"].astype(float)
+        benchmark = (close.iloc[-1] / close.iloc[0] - 1) * 100 if len(close) > 1 and close.iloc[0] > 0 else 0.0
+        metrics["fees_paid"] = self.fees_paid
+        metrics["exposure_pct"] = (self._bars_in_market / self._bars_total * 100) if self._bars_total else 0.0
+        metrics["benchmark_return_pct"] = benchmark
+        metrics["excess_return_pct"] = metrics["total_return_pct"] - benchmark
 
         return BacktestResult(
             equity_curve=equity_curve,

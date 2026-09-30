@@ -40,6 +40,12 @@ Variables d'environnement lues :
                                 gestion du risque des positions, en % (0 = off).
     AVONAM_VOL_TARGET_PCT       taille ajustée à la volatilité (0 = taille fixe).
                                 AVONAM_VOL_LOOKBACK (24), AVONAM_MIN_ORDER_EUR (5).
+    AVONAM_STRATEGY             trend | trend_regime | donchian | donchian55 |
+                                regime_sma | zscore | zscore_trend | rsi |
+                                filtered (défaut) | simple — voir
+                                broker/live/strategy.py. À choisir via la
+                                validation hors échantillon du site.
+    AVONAM_REGIME_PERIOD        moyenne longue du filtre de régime (défaut 200).
     AVONAM_OHLC_INTERVAL        unité de temps des bougies en minutes (défaut 60).
                                 5 ou 15 = intraday. Kraken : 1,5,15,30,60,240,1440.
     AVONAM_TICK_SECONDS         intervalle entre deux cycles (défaut 3600).

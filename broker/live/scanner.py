@@ -241,10 +241,11 @@ class PortfolioRunner:
         # force. Sans shorts, on ne peut qu'acheter : on force alors un long sur
         # la paire au momentum le plus élevé (la moins faible), pour que le
         # plancher demandé soit atteignable même en marché baissier.
+        # Classement par momentum AJUSTÉ DU RISQUE (momentum / volatilité).
         if self.config.allow_short:
-            ranked = sorted(proposals, key=lambda p: abs(proposals[p].momentum), reverse=True)
+            ranked = sorted(proposals, key=lambda p: abs(proposals[p].risk_adjusted_momentum), reverse=True)
         else:
-            ranked = sorted(proposals, key=lambda p: proposals[p].momentum, reverse=True)
+            ranked = sorted(proposals, key=lambda p: proposals[p].risk_adjusted_momentum, reverse=True)
 
         for pair in ranked:
             mom = proposals[pair].momentum
@@ -341,7 +342,10 @@ class PortfolioRunner:
             # Score de classement orienté : un long veut un momentum élevé, un
             # short un momentum très négatif. On ramène tout à « plus c'est
             # grand, meilleur c'est ».
-            base = momentum if intent == "open_long" else -momentum
+            # Momentum AJUSTÉ DU RISQUE : on préfère une tendance nette et
+            # régulière à un actif simplement plus agité.
+            ram = proposals[pair].risk_adjusted_momentum
+            base = ram if intent == "open_long" else -ram
             rank_score = base
             if self.sentiment_mode == "tilt" and s_reliable:
                 tilt = s_value if intent == "open_long" else -s_value

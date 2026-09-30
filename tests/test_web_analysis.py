@@ -24,10 +24,14 @@ def test_backtest_rsi_returns_rsi_series():
     assert "rsi" in data["price_series"][-1]
 
 
-def test_compare_returns_three_strategies():
+def test_compare_returns_all_strategies():
+    # La comparaison couvre désormais TOUTES les stratégies (historiques et
+    # avancées), toujours avec les trois stratégies d'origine.
+    from broker.live.strategy import STRATEGY_NAMES
+
     resp = client.get("/api/compare", params={"source": "demo"})
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["results"]) == 3
     names = {r["strategy"] for r in data["results"]}
-    assert names == {"simple", "filtered", "rsi"}
+    assert names == set(STRATEGY_NAMES)
+    assert {"simple", "filtered", "rsi"} <= names
