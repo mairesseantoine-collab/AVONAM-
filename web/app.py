@@ -94,7 +94,7 @@ def _build_live_session():
     )
     audit = AuditLog(os.environ.get("AVONAM_AUDIT_PATH", "output/live_audit.log"))
     killswitch = TradingKillSwitch(
-        max_notional_per_order=config.max_notional_per_order_eur * 1.2,
+        max_notional_per_order=max(config.max_notional_per_order_eur, config.opportunity_max_eur) * 1.2,
         max_notional_per_day=config.max_notional_per_day_eur,
         allowed_pairs=[config.pair],
         max_consecutive_failures=config.max_consecutive_failures,

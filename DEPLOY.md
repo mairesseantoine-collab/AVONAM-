@@ -360,6 +360,51 @@ ouverts : le robot continue de les gérer (stops) et les **rachète au marché**
 dans les cycles suivants (un par cycle), puis n'en ouvre plus. Un short à levier
 n'est jamais laissé sans gestion. Le démarrage du worker le signale dans les logs.
 
+## Miser plus fort sur les opportunités, et plus de cryptos
+
+**Mise renforcée (`AVONAM_OPPORTUNITY_MAX_EUR`)**, pour les achats comme pour
+les shorts. Chaque ouverture part de la mise de base (minimum Kraken avec
+`AVONAM_ORDER_SIZE=min`, ou `AVONAM_MAX_ORDER_EUR`). Quand l'opportunité est
+nette, la mise monte progressivement jusqu'à `AVONAM_OPPORTUNITY_MAX_EUR`.
+
+- **Ce qu'est une opportunité nette** : le prix a parcouru, dans le sens du
+  trade, nettement plus que son agitation habituelle sur les dernières barres
+  (1 écart-type : mise de base ; 3 écarts-types ou plus : mise maximale). Une
+  hausse calme et régulière compte plus qu'un bond dans un marché chaotique.
+- **Garde-fou principal** : par défaut, aucun renfort tant que la stratégie n'a
+  pas passé la validation hors échantillon (`AVONAM_STRATEGY=auto`). Miser plus
+  sans avantage prouvé, c'est perdre plus vite. `AVONAM_OPPORTUNITY_REQUIRES_VALIDATION=false`
+  autorise un renfort sans validation, réduit de moitié.
+- **Jamais au-delà des plafonds** : la mise renforcée est rabotée à la place
+  restante sous l'exposition (`AVONAM_MAX_POSITION_EUR`), le cumul
+  (`AVONAM_MAX_TOTAL_EUR`) et le journalier (`AVONAM_MAX_DAY_EUR`). Le worker
+  refuse de démarrer si `AVONAM_OPPORTUNITY_MAX_EUR` dépasse l'un d'eux.
+- Jamais de renfort sur une entrée forcée (plancher d'activité, short de
+  sentiment) : seulement sur un signal de la stratégie.
+
+**Univers élargi (`AVONAM_PAIRS=auto`)** : au démarrage, le worker retient les
+grandes cryptos établies cotées en euros sur Kraken (BTC, ETH, SOL, XRP, ADA,
+DOT, LINK, AVAX, LTC, DOGE, ATOM, XLM, BCH, UNI, TRX, NEAR, SUI, AAVE, POL,
+ALGO) qui sont assez liquides (`AVONAM_UNIVERSE_MIN_VOLUME_EUR`, défaut 1 M€
+échangés sur 24 h) avec un écart achat/vente serré, et garde les
+`AVONAM_UNIVERSE_SIZE` premières (défaut 8). Pas de stablecoin, pas de jeton
+obscur. Une crypto que tu détiens ou sur laquelle un short est ouvert reste
+toujours suivie. Le classement s'affiche dans les logs au démarrage.
+
+Exemple pour un capital de trading d'environ 300 € :
+
+| Variable | Valeur |
+|---|---|
+| `AVONAM_PAIRS` | `auto` |
+| `AVONAM_UNIVERSE_SIZE` | `8` |
+| `AVONAM_ORDER_SIZE` | `min` |
+| `AVONAM_MAX_ORDER_EUR` | `15` |
+| `AVONAM_OPPORTUNITY_MAX_EUR` | `40` |
+| `AVONAM_MAX_POSITION_EUR` | `60` |
+| `AVONAM_MAX_DAY_EUR` | `80` |
+| `AVONAM_MAX_TOTAL_EUR` | `300` |
+| `AVONAM_MAX_TRADES_PER_DAY` | `4` |
+
 ## Trading intraday (bougies courtes, cadence rapide)
 
 Le robot travaille par défaut sur des bougies horaires, avec un cycle par

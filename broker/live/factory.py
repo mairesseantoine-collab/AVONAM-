@@ -100,12 +100,25 @@ def build_runner():
         # Un cycle lit le solde / les positions / les ordres une seule fois
         # pour toutes les paires (vidé à chaque ordre envoyé ou annulé).
         read_cache_ttl_s=10.0,
+        # Kraken limite les appels publics (~1/s) : indispensable dès qu'on
+        # scanne beaucoup de cryptos.
+        public_min_interval_s=1.0,
     )
     audit = AuditLog(os.environ.get("AVONAM_AUDIT_PATH", "output/live_audit.log"))
-    pairs = pairs_from_env(config)
+    universe = None
+    if os.environ.get("AVONAM_PAIRS", "").strip().lower() == "auto":
+        from broker.live.universe import select_universe
+        universe = select_universe(
+            client,
+            size=int(os.environ.get("AVONAM_UNIVERSE_SIZE", 8)),
+            min_volume_eur=float(os.environ.get("AVONAM_UNIVERSE_MIN_VOLUME_EUR", 1_000_000)),
+        )
+        pairs = universe["pairs"]
+    else:
+        pairs = pairs_from_env(config)
 
     killswitch = TradingKillSwitch(
-        max_notional_per_order=config.max_notional_per_order_eur * 1.2,
+        max_notional_per_order=max(config.max_notional_per_order_eur, config.opportunity_max_eur) * 1.2,
         max_notional_per_day=config.max_notional_per_day_eur,
         allowed_pairs=pairs,
         max_consecutive_failures=config.max_consecutive_failures,
@@ -117,7 +130,9 @@ def build_runner():
             client=client, strategy=build_live_strategy(pair_config), agent=RuleBasedAgent(),
             killswitch=killswitch, audit_log=audit, config=pair_config,
         )
-        return AutonomousRunner(session)
+        runner = AutonomousRunner(session)
+        runner.universe_report = universe
+        return runner
 
     sessions = {}
     for pair in pairs:
@@ -128,4 +143,6 @@ def build_runner():
         )
     provider, mode = build_sentiment_provider()
     market = build_market_provider()
-    return PortfolioRunner(sessions, sentiment_provider=provider, sentiment_mode=mode, market_provider=market)
+    runner = PortfolioRunner(sessions, sentiment_provider=provider, sentiment_mode=mode, market_provider=market)
+    runner.universe_report = universe
+    return runner

@@ -55,12 +55,14 @@ class FakeKrakenTransport:
             "DOTEUR": {"ordermin": "0.5", "costmin": "0.5", "lot_decimals": 8, "pair_decimals": 4},
         }
         self.rejections: list[str] = []  # motifs de refus simulés (volume sous le minimum, post-only...)
+        self.volumes_24h: dict[str, float] = {}  # volume 24 h (unités de base) par paire, pour l'univers
         self.open_orders_error: str | None = None  # simule une clé sans la permission de lire les ordres
         self.cancel_error: str | None = None       # simule un échec d'annulation (ordre déjà exécuté...)
 
     # Comme le vrai Kraken, AssetPairs indexe BTC et ETH sous leur nom interne
     # (XXBTZEUR...) ; les ordres, eux, affichent le nom court (XBTEUR).
-    _INTERNAL_NAMES = {"XBTEUR": "XXBTZEUR", "ETHEUR": "XETHZEUR"}
+    _INTERNAL_NAMES = {"XBTEUR": "XXBTZEUR", "ETHEUR": "XETHZEUR", "XRPEUR": "XXRPZEUR", "XDGEUR": "XDGEUR"}
+    _BASES = {"XBT": "XXBT", "ETH": "XETH", "XRP": "XXRP", "XDG": "XXDG"}  # codes de solde historiques
 
     # -- helper réservé aux tests / à la démo --------------------------------
 
@@ -93,7 +95,8 @@ class FakeKrakenTransport:
             # Ordres de grandeur réalistes, pour que les minimums d'ordre
             # (AssetPairs) aient un sens en euros.
             base = next((p for k, p in (("XBT", 30_000.0), ("ETH", 2_000.0), ("SOL", 150.0),
-                                        ("ADA", 0.5), ("DOT", 5.0)) if k in pair), 2_000.0)
+                                        ("ADA", 0.5), ("DOT", 5.0), ("XRP", 0.5), ("LINK", 10.0),
+                                        ("XDG", 0.1)) if k in pair), 2_000.0)
             price = base
             floor = base * 0.01
             now = int(time.time())
@@ -120,20 +123,30 @@ class FakeKrakenTransport:
         pair = params.get("pair", "XBTEUR")
 
         if parsed.path.endswith("/public/Ticker"):
-            rows = self._synthetic_ohlc(pair)
-            last_close = rows[-1][4]
-            ask, bid = self._quotes(pair)
-            return HttpResponse(200, {"error": [], "result": {pair: {
-                "c": [last_close, "0.1"], "a": [f"{ask:.8f}", "1"], "b": [f"{bid:.8f}", "1"]}}}, {})
+            result = {}
+            for p in pair.split(","):
+                rows = self._synthetic_ohlc(p)
+                last_close = rows[-1][4]
+                ask, bid = self._quotes(p)
+                vol = self.volumes_24h.get(p, 1_000.0)
+                # Comme le vrai Kraken : réponse sous le nom interne de la paire.
+                result[self._INTERNAL_NAMES.get(p, p)] = {
+                    "c": [last_close, "0.1"], "a": [f"{ask:.8f}", "1"], "b": [f"{bid:.8f}", "1"],
+                    "v": [f"{vol / 2}", f"{vol}"], "p": [last_close, last_close],
+                }
+            return HttpResponse(200, {"error": [], "result": result}, {})
 
         if parsed.path.endswith("/public/OHLC"):
             rows = self._synthetic_ohlc(pair)
             return HttpResponse(200, {"error": [], "result": {pair: rows, "last": rows[-1][0]}}, {})
 
         if parsed.path.endswith("/public/AssetPairs"):
-            wanted = params.get("pair", "").split(",")
+            wanted = params["pair"].split(",") if params.get("pair") else list(self.pair_info)
             result = {
-                self._INTERNAL_NAMES.get(p, p): {"altname": p, "wsname": f"{p[:-3]}/{p[-3:]}", **self.pair_info[p]}
+                self._INTERNAL_NAMES.get(p, p): {
+                    "altname": p, "wsname": f"{p[:-3]}/{p[-3:]}", "base": self._BASES.get(p[:-3], p[:-3]),
+                    "quote": "ZEUR", "status": "online", **self.pair_info[p],
+                }
                 for p in wanted if p in self.pair_info
             }
             return HttpResponse(200, {"error": [], "result": result}, {})

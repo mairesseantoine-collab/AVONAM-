@@ -32,7 +32,12 @@ def startup_report(runner) -> str:
     round_trip = entry_fee + exit_fee
     cap = config.max_notional_per_order_eur
 
-    lines = ["Minimums d'ordre Kraken (lus en direct) et taille réellement utilisée :"]
+    lines = []
+    universe = getattr(runner, "universe_report", None)
+    if universe:
+        from broker.live.universe import describe_universe
+        lines += [describe_universe(universe), ""]
+    lines.append("Minimums d'ordre Kraken (lus en direct) et taille réellement utilisée :")
     for s in sessions:
         pair = s.config.pair
         try:
@@ -68,6 +73,15 @@ def startup_report(runner) -> str:
                         "le robot va le racheter au marché dans les prochains cycles (stops actifs d'ici là).")
             except Exception:
                 continue
+
+    if config.opportunity_max_eur > 0:
+        cond = ("seulement si la stratégie est validée (AVONAM_STRATEGY=auto)"
+                if config.opportunity_requires_validation else "renfort réduit de moitié sans validation")
+        lines.append(
+            f"Mise renforcée sur opportunité : jusqu'à {config.opportunity_max_eur:.2f} € par ouverture "
+            f"(achat ou short) quand la tendance est nette, {cond}, toujours sous les plafonds "
+            f"(exposition {config.max_position_eur:.2f} €, jour {config.max_notional_per_day_eur:.2f} €, "
+            f"total {config.max_total_notional_eur:.2f} €).")
 
     kind = "maker (limite post-only)" if config.order_type == "maker" else "au marché (taker)"
     lines.append(

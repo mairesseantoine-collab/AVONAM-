@@ -109,6 +109,8 @@ class PortfolioRunner:
         risk_txt = ", ".join(risk_bits) if risk_bits else "aucune sortie automatique"
         exit_txt = "sur signal" if self.config.signal_exit else "tenue jusqu'aux stops"
         sshort = "activés" if self.config.sentiment_short else "désactivés"
+        opp = self.config.opportunity_max_eur
+        opp_txt = f"jusqu'à {opp:g} € par ouverture" if opp > 0 else "désactivée"
         return (
             f"Mode : {self.config.mode.value}\n"
             f"Paires scannées : {pairs}\n"
@@ -119,6 +121,7 @@ class PortfolioRunner:
             f"Gestion du risque : {risk_txt}\n"
             f"Politique de sortie : {exit_txt}\n"
             f"Plancher d'activité : {floor_txt}\n"
+            f"Mise renforcée sur opportunité : {opp_txt}\n"
             f"Ordres réels exécutés aujourd'hui : {n}\n"
             f"Plafonds : {self.config.max_notional_per_order_eur} €/ordre, "
             f"{self.config.max_position_eur} € d'exposition max par crypto.\n"

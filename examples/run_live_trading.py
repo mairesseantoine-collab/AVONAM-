@@ -60,7 +60,7 @@ def main() -> None:
     client = KrakenClient(RequestsTransport(), api_key=api_key, api_secret=api_secret)
     audit = AuditLog("output/live_audit.log")
     killswitch = TradingKillSwitch(
-        max_notional_per_order=config.max_notional_per_order_eur * 1.2,  # marge de sécurité au-dessus de la taille visée
+        max_notional_per_order=max(config.max_notional_per_order_eur, config.opportunity_max_eur) * 1.2,  # marge de sécurité au-dessus de la taille visée
         max_notional_per_day=config.max_notional_per_day_eur,
         allowed_pairs=[config.pair],
         max_consecutive_failures=config.max_consecutive_failures,

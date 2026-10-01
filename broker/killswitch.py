@@ -74,6 +74,10 @@ class TradingKillSwitch:
             if self._consecutive_failures >= self.max_consecutive_failures:
                 self._tripped = True
 
+    def remaining_today(self) -> float:
+        """Notionnel encore autorisé sur les 24 dernières heures."""
+        return max(0.0, self.max_notional_per_day - self._total_last_24h())
+
     def release(self, notional: float) -> None:
         """Restitue au plafond journalier le notionnel d'un ordre annulé SANS
         aucune exécution (ordre limite maker jamais rempli) : il n'a rien

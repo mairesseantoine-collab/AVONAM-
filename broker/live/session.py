@@ -185,6 +185,7 @@ class OrderProposal:
     # prioritaire). propose() ne fait que les désigner : l'annulation, qui
     # agit sur le compte, n'a lieu que dans confirm_and_execute().
     cancel_first: list = field(default_factory=list)
+    conviction: float = 0.0      # 0 = mise de base ; 1 = mise d'opportunité maximale
 
     @property
     def risk_adjusted_momentum(self) -> float:
@@ -355,6 +356,36 @@ class LiveTradingSession:
         notional = min(cap * (target / vol), cap)
         notional = max(notional, self.config.min_notional_eur)
         return min(notional, cap)
+
+    def _conviction(self, intent: str, data) -> tuple[float, str | None]:
+        """Force de l'opportunité, entre 0 et 1, dans le SENS du trade.
+
+        Mesure : la tendance récente rapportée à sa propre volatilité (combien
+        d'« écarts-types » le prix a parcouru sur les dernières barres). Une
+        hausse de 6 % dans un marché qui bouge de 1 % par barre est un signal
+        net ; la même hausse dans un marché qui bouge de 5 % par barre n'est que
+        du bruit. 0 sous 1 écart-type, 1 à partir de 3.
+
+        Garde-fou : sans stratégie validée hors échantillon, pas de renfort
+        (ou renfort réduit de moitié si l'opérateur l'a explicitement permis)."""
+        closes = data["close"].astype(float)
+        n = min(_MOMENTUM_LOOKBACK, len(closes) - 1)
+        vol = self._volatility(data)
+        if n < 2 or vol <= 0 or float(closes.iloc[-1 - n]) <= 0:
+            return 0.0, None
+        move = float(closes.iloc[-1]) / float(closes.iloc[-1 - n]) - 1.0
+        t = move / (vol * math.sqrt(n))
+        directional = t if intent == "open_long" else -t
+        strength = min(1.0, max(0.0, (directional - 1.0) / 2.0))
+        if strength <= 0:
+            return 0.0, f"signal ordinaire ({directional:.1f} écart-type)"
+        if not getattr(self.strategy, "validated", False):
+            if self.config.opportunity_requires_validation:
+                return 0.0, (f"tendance nette ({directional:.1f} écarts-types) mais aucune stratégie "
+                             "validée : mise de base")
+            return strength * 0.5, (f"tendance nette ({directional:.1f} écarts-types), stratégie non "
+                                    "validée : renfort réduit de moitié")
+        return strength, f"tendance nette ({directional:.1f} écarts-types) et stratégie validée"
 
     def _extremum_since(self, data, etime, kind: str) -> float:
         col = "high" if kind == "max" else "low"
@@ -527,6 +558,29 @@ class LiveTradingSession:
                 size_block = (f"le minimum Kraken pour {self.config.pair} (~{floor:.2f} €) dépasse "
                               f"le plafond par ordre ({self.config.max_notional_per_order_eur:.2f} €)")
 
+        # Mise renforcée sur opportunité (achat comme short) : uniquement sur un
+        # signal de la stratégie (jamais une entrée forcée), dans la limite de
+        # la place restante sous TOUS les plafonds.
+        conviction, sizing_note = 0.0, None
+        if (self.config.opportunity_max_eur > 0 and decision.intent in ("open_long", "open_short")
+                and not forced and not risk_intent and not size_block):
+            conviction, sizing_note = self._conviction(decision.intent, data)
+            if conviction > 0:
+                room = min(
+                    self.config.opportunity_max_eur,
+                    self.config.max_position_eur - exposure_value,
+                    self.config.max_total_notional_eur - already,
+                    self.killswitch.remaining_today(),
+                )
+                target = open_notional + conviction * (self.config.opportunity_max_eur - open_notional)
+                boosted = min(target, room)
+                if boosted > open_notional + 0.01:
+                    open_notional = boosted
+                    decision = replace(decision, rationale=(
+                        f"{decision.rationale} Mise renforcée à ~{boosted:.2f} € : {sizing_note}."))
+                else:
+                    conviction = 0.0
+
         # Exécution : au marché (frais taker) ou ordre limite post-only (frais
         # maker, deux fois moins chers). Les sorties de RISQUE partent toujours
         # au marché : sortir doit être garanti, pas économique.
@@ -580,6 +634,8 @@ class LiveTradingSession:
             "limit_price": order.price if order else None,
             "rationale": decision.rationale,
             "estimated_notional_eur": round(estimated_notional, 2),
+            "conviction": round(conviction, 3),
+            "sizing_note": sizing_note,
             "allowed": allowed,
             "block_reason": block_reason,
         })
@@ -594,6 +650,7 @@ class LiveTradingSession:
             momentum=momentum,
             volatility=self._volatility(data),
             cancel_first=cancel_first if allowed else [],
+            conviction=conviction,
         )
 
     def _build_order(self, intent: str, last_price: float, held_volume: float, short_volume: float,

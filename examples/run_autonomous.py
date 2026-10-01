@@ -19,6 +19,19 @@ Variables d'environnement lues :
                                 Si définie (plus d'une paire), active le
                                 MULTI-CRYPTO : scanne toutes les paires et
                                 n'agit que sur le meilleur candidat par cycle.
+                                auto = univers choisi au démarrage : les grandes
+                                cryptos établies les plus liquides en euros sur
+                                Kraken (AVONAM_UNIVERSE_SIZE, défaut 8 ;
+                                AVONAM_UNIVERSE_MIN_VOLUME_EUR, défaut 1 000 000).
+                                Une crypto détenue ou shortée reste toujours suivie.
+    AVONAM_OPPORTUNITY_MAX_EUR  mise MAXIMALE d'une ouverture (achat ou short)
+                                quand l'opportunité est forte (0 = désactivé).
+                                La mise monte de la mise de base jusqu'à ce
+                                montant selon la netteté de la tendance, sous
+                                tous les plafonds. Par défaut seulement si la
+                                stratégie est validée (AVONAM_STRATEGY=auto) ;
+                                AVONAM_OPPORTUNITY_REQUIRES_VALIDATION=false
+                                l'autorise sans validation, réduit de moitié.
     AVONAM_SENTIMENT_MODE       off | filter (défaut) | tilt — rôle du
                                 sentiment par symbole (jamais un déclencheur,
                                 voir sentiment/__init__.py).

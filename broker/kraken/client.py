@@ -37,6 +37,7 @@ class KrakenClient:
         api_secret: str | None = None,
         base_url: str = DEFAULT_BASE_URL,
         read_cache_ttl_s: float = 0.0,
+        public_min_interval_s: float = 0.0,
     ) -> None:
         self.transport = transport
         self.api_key = api_key
@@ -50,6 +51,11 @@ class KrakenClient:
         # envoi ou annulation d'ordre vide le cache. 0 = désactivé.
         self.read_cache_ttl_s = read_cache_ttl_s
         self._reads: dict[str, tuple[float, object]] = {}
+        # Espacement minimal entre deux appels publics : Kraken limite les
+        # appels publics (~1 par seconde) ; avec beaucoup de cryptos scannées,
+        # une rafale serait refusée. 0 = pas d'attente.
+        self.public_min_interval_s = public_min_interval_s
+        self._last_public = 0.0
 
     # -- métadonnées de place de marché (voir broker/venue.py) ----------------
     # Kraken est une place crypto, ouverte 24h/24, 7j/7. Un futur adaptateur
@@ -68,9 +74,24 @@ class KrakenClient:
     # -- endpoints publics (pas d'authentification) --------------------------
 
     def get_ticker(self, pair: str) -> dict:
-        resp = self.transport.get(f"{self.base_url}/0/public/Ticker?pair={pair}")
-        self._raise_on_error(resp.json_body)
-        return resp.json_body["result"][pair]
+        """Ticker d'une paire. Kraken répond sous le nom INTERNE de la paire
+        (XBTEUR → XXBTZEUR) : on accepte les deux."""
+        result = self._public_get(f"/0/public/Ticker?pair={pair}")
+        if pair in result:
+            return result[pair]
+        if len(result) == 1:
+            return next(iter(result.values()))
+        raise RuntimeError(f"Ticker introuvable pour {pair} : {sorted(result)}")
+
+    def get_tickers(self, pairs: list[str]) -> dict[str, dict]:
+        """Tickers de plusieurs paires en UN appel, indexés comme Kraken les
+        renvoie (nom interne pour les paires historiques)."""
+        return self._public_get(f"/0/public/Ticker?pair={','.join(pairs)}")
+
+    def get_all_asset_pairs(self) -> dict[str, dict]:
+        """Toutes les paires tradables de Kraken (AssetPairs sans filtre),
+        réponse brute indexée par nom interne. Sert à choisir l'univers."""
+        return self._public_get("/0/public/AssetPairs")
 
     def get_asset_pairs(self, pairs: list[str]) -> dict[str, dict]:
         """Règles de trading des paires (endpoint public AssetPairs) :
@@ -79,10 +100,8 @@ class KrakenClient:
         volume) et `pair_decimals` (précision du prix). Un ordre qui ne les
         respecte pas est REFUSÉ par Kraken. Indexé par nom court (XBTEUR) et
         par nom interne (XXBTZEUR)."""
-        resp = self.transport.get(f"{self.base_url}/0/public/AssetPairs?pair={','.join(pairs)}")
-        self._raise_on_error(resp.json_body)
         out: dict[str, dict] = {}
-        for key, v in (resp.json_body.get("result") or {}).items():
+        for key, v in self._public_get(f"/0/public/AssetPairs?pair={','.join(pairs)}").items():
             info = {
                 "ordermin": float(v.get("ordermin") or 0.0),
                 "costmin": float(v.get("costmin") or 0.0),
@@ -111,10 +130,7 @@ class KrakenClient:
         date, exactement le format attendu par `avonam.strategy.Strategy`
         et `avonam.backtest.BacktestEngine` — aucune adaptation nécessaire
         pour réutiliser le moteur de trading existant sur ces données."""
-        resp = self.transport.get(f"{self.base_url}/0/public/OHLC?pair={pair}&interval={interval_minutes}")
-        self._raise_on_error(resp.json_body)
-
-        result = resp.json_body["result"]
+        result = self._public_get(f"/0/public/OHLC?pair={pair}&interval={interval_minutes}")
         rows = next(v for k, v in result.items() if k != "last")
         df = pd.DataFrame(rows, columns=["time", "open", "high", "low", "close", "vwap", "volume", "count"])
         df["date"] = pd.to_datetime(df["time"], unit="s")
@@ -258,6 +274,16 @@ class KrakenClient:
             self._reads.clear()
 
     # -- interne ---------------------------------------------------------------
+
+    def _public_get(self, path: str) -> dict:
+        if self.public_min_interval_s > 0:
+            wait = self._last_public + self.public_min_interval_s - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            self._last_public = time.monotonic()
+        resp = self.transport.get(f"{self.base_url}{path}")
+        self._raise_on_error(resp.json_body)
+        return resp.json_body.get("result") or {}
 
     def _cached_private(self, endpoint: str, data: dict) -> dict:
         """Lecture privée, servie depuis le cache court si elle est récente."""

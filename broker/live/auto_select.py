@@ -165,5 +165,10 @@ class AutoStrategy:
             return pd.Series(0, index=data.index, dtype=int)  # aucune stratégie validée : à plat
         return self._delegate.generate_signals(data)
 
+    @property
+    def validated(self) -> bool:
+        """True si une stratégie a passé la validation hors échantillon."""
+        return bool(self.report and self.report.get("chosen"))
+
     def describe(self) -> str:
         return describe(self.pair, self.report)

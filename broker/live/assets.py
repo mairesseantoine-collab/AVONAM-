@@ -20,7 +20,17 @@ _LEGACY_BASE = {
     "XMR": "XXMR",
     "ZEC": "XZEC",
     "XLM": "XXLM",
+    "XDG": "XXDG",   # Dogecoin (paire XDGEUR)
 }
+
+# Codes de solde appris en direct (AssetPairs, champ « base »), prioritaires
+# sur la règle ci-dessus : l'univers automatique y enregistre chaque paire.
+_LEARNED_BASE: dict[str, str] = {}
+
+
+def register_base(pair: str, base_code: str) -> None:
+    if pair and base_code:
+        _LEARNED_BASE[pair.upper()] = base_code
 
 _QUOTES = ("EUR", "USD", "USDT", "USDC", "GBP")
 
@@ -30,6 +40,8 @@ def base_asset_for(pair: str) -> str | None:
     None si la devise de cotation n'est pas reconnue (on reste alors prudent
     en amont : aucune vente proposée faute de savoir lire la position)."""
     pair = pair.upper()
+    if pair in _LEARNED_BASE:
+        return _LEARNED_BASE[pair]
     for quote in _QUOTES:
         if pair.endswith(quote):
             base = pair[: -len(quote)]
@@ -39,7 +51,7 @@ def base_asset_for(pair: str) -> str | None:
 
 # Symbole « courant » d'une paire, pour l'analyse de sentiment (BTC plutôt que
 # le code interne XBT/XXBT de Kraken).
-_SENTIMENT_ALIAS = {"XBT": "BTC"}
+_SENTIMENT_ALIAS = {"XBT": "BTC", "XDG": "DOGE"}
 
 
 def sentiment_symbol_for(pair: str) -> str | None:

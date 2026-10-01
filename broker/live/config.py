@@ -85,6 +85,19 @@ class LiveTradingConfig:
     maker_timeout_min: int = 60            # un ordre maker non exécuté après ce délai est annulé
     maker_exits: bool = False              # True : sorties sur signal aussi en maker (stops toujours au marché)
 
+    # -- mise renforcée sur opportunité (achats ET shorts) ----------------------
+    # 0 (défaut) = désactivé : toujours la mise de base. > 0 = montant MAXIMAL
+    # d'une ouverture quand l'opportunité est forte (tendance nette et régulière
+    # dans le sens du trade). La mise monte progressivement de la mise de base
+    # jusqu'à ce montant selon la force du signal, sans jamais dépasser la place
+    # restante sous les plafonds (exposition, cumul, journalier).
+    opportunity_max_eur: float = 0.0
+    # True (défaut) : on ne mise plus fort QUE si la stratégie a passé la
+    # validation hors échantillon (AVONAM_STRATEGY=auto). Miser plus sans
+    # avantage prouvé, c'est perdre plus vite. False : renfort autorisé sans
+    # validation, mais réduit de moitié.
+    opportunity_requires_validation: bool = True
+
     # Paris à la baisse déclenchés par le sentiment / la peur (opt-in). Quand
     # activé (et allow_short), un sentiment franchement négatif OU une peur
     # extrême du marché ouvre un short, même sans signal technique baissier.
@@ -120,6 +133,20 @@ class LiveTradingConfig:
             raise ValueError(f"order_size invalide : {self.order_size!r} (attendu : fixed ou min).")
         if self.order_type not in ("market", "maker"):
             raise ValueError(f"order_type invalide : {self.order_type!r} (attendu : market ou maker).")
+        if self.opportunity_max_eur < 0:
+            raise ValueError("opportunity_max_eur ne peut pas être négatif.")
+        if self.opportunity_max_eur > 0:
+            if self.opportunity_max_eur < self.max_notional_per_order_eur:
+                raise ValueError(
+                    f"AVONAM_OPPORTUNITY_MAX_EUR ({self.opportunity_max_eur:g}) doit être au moins égal "
+                    f"au plafond par ordre AVONAM_MAX_ORDER_EUR ({self.max_notional_per_order_eur:g}).")
+            for name, label in (("max_position_eur", "AVONAM_MAX_POSITION_EUR"),
+                                ("max_notional_per_day_eur", "AVONAM_MAX_DAY_EUR"),
+                                ("max_total_notional_eur", "AVONAM_MAX_TOTAL_EUR")):
+                if self.opportunity_max_eur > getattr(self, name):
+                    raise ValueError(
+                        f"AVONAM_OPPORTUNITY_MAX_EUR ({self.opportunity_max_eur:g}) dépasse {label} "
+                        f"({getattr(self, name):g}) : relève ce plafond ou baisse la mise d'opportunité.")
         if self.maker_timeout_min < 1:
             raise ValueError("maker_timeout_min doit valoir au moins 1 minute.")
         # Kraken n'accepte qu'un ensemble fini d'intervalles OHLC (en minutes).
@@ -175,6 +202,9 @@ class LiveTradingConfig:
             order_type=os.environ.get("AVONAM_ORDER_TYPE", "market").strip().lower(),
             maker_timeout_min=int(os.environ.get("AVONAM_MAKER_TIMEOUT_MIN", 60)),
             maker_exits=_b("AVONAM_MAKER_EXITS"),
+            opportunity_max_eur=_f("AVONAM_OPPORTUNITY_MAX_EUR", 0.0),
+            opportunity_requires_validation=os.environ.get(
+                "AVONAM_OPPORTUNITY_REQUIRES_VALIDATION", "true").strip().lower() not in ("0", "false", "no", "off"),
             sentiment_short=_b("AVONAM_SENTIMENT_SHORT"),
             sentiment_short_threshold=_f("AVONAM_SENTIMENT_SHORT_THRESHOLD", -0.5),
         )
