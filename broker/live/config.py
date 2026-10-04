@@ -169,6 +169,8 @@ class LiveTradingConfig:
         """Charge la config depuis l'environnement. Le mode est SHADOW sauf
         si `AVONAM_MODE=live_real` est explicitement défini — un oubli de
         variable ne peut donc jamais activer le réel par accident."""
+        from broker.live.profiles import apply_profile
+        apply_profile()  # AVONAM_PROFILE : réglages cohérents en une variable
         raw = os.environ.get("AVONAM_MODE", "shadow").strip().lower()
         mode = LiveMode.LIVE_REAL if raw == LiveMode.LIVE_REAL.value else LiveMode.SHADOW
 

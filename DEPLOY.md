@@ -297,6 +297,32 @@ Démarche recommandée :
 > rentabilité de la méthode. Préfère un stop de sécurité large et un stop
 > suiveur.
 
+## Le plus simple : un profil (`AVONAM_PROFILE`)
+
+Au lieu de régler vingt variables qui peuvent se contredire, une seule suffit :
+
+| Profil | Rythme | Pour qui |
+|---|---|---|
+| `prudent` | souvent aucun trade pendant des jours : seulement une stratégie validée hors échantillon | protéger le capital avant tout |
+| `equilibre` | quelques trades par semaine, tendances sur bougies de 4 h | le bon compromis |
+| `actif` | 3 à 10 trades par jour, bougies d'1 h, entrées forcées sur le meilleur momentum si aucun signal, stops serrés | voir le robot travailler |
+
+Tous les profils : cryptos choisies automatiquement parmi les plus liquides,
+mise au minimum Kraken, ordres maker (frais réduits), pas de short. Un profil ne
+touche **jamais** à `AVONAM_MODE`, à la clé API ni aux plafonds d'argent
+(`AVONAM_MAX_ORDER_EUR`, `AVONAM_MAX_DAY_EUR`, `AVONAM_MAX_TOTAL_EUR`,
+`AVONAM_MAX_POSITION_EUR`).
+
+Une variable que tu définis toi-même garde la priorité sur le profil, et le log
+de démarrage la signale. Pour repartir propre dans Render, garde seulement :
+`KRAKEN_API_KEY`, `KRAKEN_API_SECRET`, `AVONAM_MODE`, `AVONAM_PROFILE`, les
+`AVONAM_MAX_*_EUR`, `AVONAM_AUDIT_PATH` et les variables d'email ; supprime les
+autres variables `AVONAM_*` de réglage.
+
+Quand le robot ne fait rien, chaque ligne de log dit désormais pourquoi, crypto
+par crypto (« Sans signal d'entrée : ... », « Positions conservées : ... »,
+« Bloquées : ETHEUR (minimum Kraken au-dessus du plafond) »).
+
 ## Frais Kraken, taille minimale, ordres maker et sélection automatique
 
 Depuis le 9 juillet 2026, Kraken Pro facture au palier 1 (moins de 2 500 $ de

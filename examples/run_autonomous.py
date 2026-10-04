@@ -11,8 +11,13 @@ Recommandation : lancez-le d'abord en SHADOW plusieurs jours, vérifiez le
 journal d'audit, puis seulement ensuite envisagez LIVE_REAL avec le petit
 capital déjà déposé.
 
+Le plus simple : AVONAM_PROFILE = prudent | equilibre | actif fixe tous les
+réglages ci-dessous de façon cohérente (voir broker/live/profiles.py). Une
+variable définie explicitement garde la priorité.
+
 Variables d'environnement lues :
     AVONAM_MODE                 shadow (défaut) | live_real
+    AVONAM_PROFILE              prudent | equilibre | actif (réglages en un mot)
     AVONAM_PAIR                 XBTEUR (défaut) | ETHEUR — mono-crypto
     AVONAM_PAIRS                liste séparée par des virgules, ex.
                                 "XBTEUR,ETHEUR,SOLEUR,ADAEUR,DOTEUR".

@@ -32,7 +32,11 @@ def startup_report(runner) -> str:
     round_trip = entry_fee + exit_fee
     cap = config.max_notional_per_order_eur
 
-    lines = []
+    from broker.live.profiles import apply_profile, describe_profile
+    try:
+        lines = [describe_profile(apply_profile()), ""]
+    except ValueError as exc:
+        lines = [str(exc), ""]
     universe = getattr(runner, "universe_report", None)
     if universe:
         from broker.live.universe import describe_universe

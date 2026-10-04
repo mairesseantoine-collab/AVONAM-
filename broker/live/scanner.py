@@ -38,6 +38,27 @@ from market.signal import NullMarketProvider
 from sentiment.provider import NullSentimentProvider, SentimentProvider
 
 
+def _why_nothing(proposals) -> str:
+    """Résumé lisible, crypto par crypto, de pourquoi rien n'a été fait :
+    sans signal, position conservée, ou bloquée (et par quoi)."""
+    waiting, holding, blocked = [], [], []
+    for pair, p in proposals.items():
+        if p.block_reason and (p.decision.intent != "hold" or not p.allowed):
+            blocked.append(f"{pair} ({p.block_reason})")
+        elif p.decision.intent == "hold" and "conserve" in p.decision.rationale:
+            holding.append(pair)
+        else:
+            waiting.append(pair)
+    parts = []
+    if waiting:
+        parts.append(f"Sans signal d'entrée : {', '.join(waiting)}")
+    if holding:
+        parts.append(f"Positions conservées : {', '.join(holding)}")
+    if blocked:
+        parts.append(f"Bloquées : {'; '.join(blocked)}")
+    return ". ".join(parts) + "." if parts else ""
+
+
 def _auto_lines(sessions) -> str:
     """Verdicts de la sélection automatique (AVONAM_STRATEGY=auto), s'il y en a."""
     lines = [s.strategy.describe() for s in sessions if hasattr(s.strategy, "describe")]
@@ -211,8 +232,8 @@ class PortfolioRunner:
             return self._execute_open(candidate, proposal, forced=True)
 
         if open_pairs:
-            return TickResult(False, "Tous les candidats écartés par le filtre de sentiment.")
-        return TickResult(False, "Aucun candidat : aucune paire ne donne de signal d'ouverture exécutable.")
+            return TickResult(False, "Tous les candidats écartés par le filtre de sentiment. " + _why_nothing(proposals))
+        return TickResult(False, "Aucun trade ce cycle. " + _why_nothing(proposals))
 
     def _execute_open(self, candidate, proposal, forced: bool = False) -> TickResult:
         result = self.sessions[candidate.pair].confirm_and_execute(proposal, human_confirmed=True)
