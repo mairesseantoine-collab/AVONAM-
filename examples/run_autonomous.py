@@ -98,7 +98,44 @@ from broker.live.config import LiveMode
 from broker.live.factory import build_runner  # câblage partagé avec le site
 
 
+# Robot ARRÊTÉ à la demande de son propriétaire. Tant que AVONAM_RESUME_TRADING
+# n'est pas explicitement mis à « true », le worker ne passe AUCUN ordre : il
+# annule seulement ses propres ordres limites encore en attente, puis reste en
+# veille. Les positions déjà ouvertes ne sont PAS touchées (pas de vente
+# automatique) : elles se gèrent à la main dans Kraken.
+TRADING_HALTED = os.environ.get("AVONAM_RESUME_TRADING", "").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def halt() -> None:
+    print("=== AVONAM : robot de trading ARRÊTÉ ===", flush=True)
+    print("Aucun ordre ne sera passé. Pour le relancer un jour : AVONAM_RESUME_TRADING=true.", flush=True)
+    key, secret = os.environ.get("KRAKEN_API_KEY"), os.environ.get("KRAKEN_API_SECRET")
+    if key and secret:
+        try:
+            from broker.kraken.client import KrakenClient
+            from broker.live.session import AVONAM_USERREF
+            from common.http_transport import RequestsTransport
+
+            client = KrakenClient(RequestsTransport(), api_key=key, api_secret=secret)
+            pending = client.get_open_orders(userref=AVONAM_USERREF)
+            for o in pending:
+                client.cancel_order(o["id"])
+                print(f"Ordre en attente du robot annulé : {o['id']} ({o.get('pair')} {o.get('side')})", flush=True)
+            print(f"{len(pending)} ordre(s) en attente du robot annulé(s). Tes ordres manuels ne sont pas touchés.",
+                  flush=True)
+        except Exception as exc:
+            print(f"Annulation des ordres en attente impossible ({exc}) : vérifie-les dans Kraken.", flush=True)
+    _try_alert("Robot de trading arrêté", "Le robot ne passe plus aucun ordre. Les positions ouvertes restent "
+               "à gérer dans Kraken. Pense à suspendre le Background Worker dans Render.")
+    while True:  # veille : Render relancerait un processus qui se termine
+        time.sleep(3600)
+        print(time.strftime("[%Y-%m-%d %H:%M:%S]") + " robot arrêté, aucun ordre.", flush=True)
+
+
 def main() -> None:
+    if TRADING_HALTED:
+        halt()
+        return
     runner = build_runner()
     config = runner.config
     interval = int(os.environ.get("AVONAM_TICK_SECONDS", 3600))
