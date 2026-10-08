@@ -1,5 +1,14 @@
 # Déployer le tableau de bord AVONAM
 
+> **Site actuel : compendium d'hématologie.** Le web service Render sert
+> désormais le compendium des analyses (`compendium/`, données transcrites du
+> compendium du laboratoire version 15/01/2024) : recherche, filtres par
+> section et par échantillon, valeurs de référence par âge, impression.
+> Le `Dockerfile` lance `uvicorn compendium.app:app`. Pour mettre à jour une
+> analyse, modifier `compendium/data.py` puis pousser : Render redéploie.
+> L'ancienne plateforme de trading reste dans le dépôt mais n'est plus servie.
+
+
 Ce guide déploie **`web/app.py`** (le tableau de bord de backtest) sur un
 serveur accessible depuis n'importe quel ordinateur. Il ne déploie **pas**
 le module bancaire (`bank/`) : `web/app.py` ne l'importe pas, et il ne doit

@@ -17,11 +17,12 @@ COPY market ./market
 COPY web ./web
 COPY data ./data
 COPY examples ./examples
+COPY compendium ./compendium
 COPY pyproject.toml .
 
 EXPOSE 8000
 
-# Commande par défaut : le web service. Le Background Worker automatique
-# surcharge cette commande par `python -m examples.run_autonomous`
-# (voir DEPLOY.md).
-CMD ["uvicorn", "web.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Commande par défaut : le web service, qui sert désormais le compendium
+# d'hématologie (compendium/). Render fournit le port dans $PORT. Un éventuel
+# Background Worker garde sa propre commande (voir DEPLOY.md).
+CMD ["sh", "-c", "uvicorn compendium.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
