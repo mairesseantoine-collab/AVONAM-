@@ -1,9 +1,11 @@
 # Déployer le tableau de bord AVONAM
 
-> **Site actuel : compendium d'hématologie.** Le web service Render sert
-> désormais le compendium des analyses (`compendium/`, données transcrites du
-> compendium du laboratoire version 15/01/2024) : recherche, filtres par
-> section et par échantillon, valeurs de référence par âge, impression.
+> **Site actuel : compendium des analyses.** Le web service Render sert le
+> compendium du laboratoire (`compendium/`) : hématologie (version 15/01/2024,
+> 80 analyses) et chimie clinique (version 04/12/2023, 759 analyses extraites du
+> PDF par `scripts/extract_compendium_chimie.py`). Recherche, onglets par
+> discipline, filtres par section et par échantillon, liens directs vers une
+> analyse, valeurs de référence par âge, impression.
 > Le `Dockerfile` lance `uvicorn compendium.app:app`.
 >
 > **Modifier le compendium en ligne** : page `/admin` (lien en bas du site),

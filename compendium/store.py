@@ -30,6 +30,7 @@ from pathlib import Path
 import requests
 
 from compendium.data import ANALYSES as SEED
+from compendium.data import SECTION_GROUP
 
 DATA_FILE = "compendium/compendium.json"
 _HISTORY_MAX = 300
@@ -40,7 +41,35 @@ class StoreError(RuntimeError):
 
 
 def seed_document() -> dict:
-    return {"version": 0, "analyses": copy.deepcopy(SEED), "history": []}
+    return {"version": 0, "analyses": copy.deepcopy(SEED), "history": [], "deleted": []}
+
+
+def migrate(doc: dict) -> dict:
+    """Met un document enregistré à niveau avec les données sources, SANS
+    écraser les modifications faites en ligne :
+      - une analyse enregistrée sans `uid` (version précédente du site) est
+        rattachée à son analyse source par (section, nom, échantillon) ;
+      - une analyse source absente du document (nouvelle discipline, nouvelle
+        version du PDF) est ajoutée, sauf si elle a été supprimée en ligne ;
+      - les champs apparus depuis sont ajoutés vides."""
+    doc.setdefault("history", [])
+    doc.setdefault("deleted", [])
+    by_key = {(a["section"], a["name"], a.get("sample")): a for a in SEED}
+    for a in doc["analyses"]:
+        if not a.get("uid"):
+            src = by_key.get((a.get("section"), a.get("name"), a.get("sample")))
+            a["uid"] = src["uid"] if src else f"user-{a['id']}"
+        a.setdefault("group", SECTION_GROUP.get(a.get("section"), "hemato"))
+    present = {a["uid"] for a in doc["analyses"]}
+    next_id = max((a["id"] for a in doc["analyses"]), default=-1) + 1
+    for src in SEED:
+        if src["uid"] not in present and src["uid"] not in doc["deleted"]:
+            doc["analyses"].append(dict(copy.deepcopy(src), id=next_id))
+            next_id += 1
+    for a in doc["analyses"]:
+        for f in SEED[0]:
+            a.setdefault(f, None)
+    return doc
 
 
 def _normalize(doc: dict) -> dict:
@@ -144,7 +173,7 @@ class Compendium:
     def __init__(self, store) -> None:
         self.store = store
         self._lock = threading.Lock()
-        self.doc = store.load()
+        self.doc = migrate(store.load())
 
     @property
     def analyses(self) -> list[dict]:
@@ -161,14 +190,17 @@ class Compendium:
         with self._lock:
             doc = copy.deepcopy(self.doc)
             items = doc["analyses"]
+            analysis["group"] = SECTION_GROUP.get(analysis["section"], "hemato")
             if analysis.get("id") is None:
                 analysis["id"] = max((a["id"] for a in items), default=-1) + 1
+                analysis["uid"] = f"user-{analysis['id']}"
                 items.append(analysis)
                 action = "ajout"
             else:
                 idx = next((i for i, a in enumerate(items) if a["id"] == analysis["id"]), None)
                 if idx is None:
                     raise KeyError(analysis["id"])
+                analysis["uid"] = items[idx].get("uid") or f"user-{analysis['id']}"
                 items[idx] = analysis
                 action = "modification"
             self._commit(doc, action, analysis["name"])
@@ -181,4 +213,5 @@ class Compendium:
             if target is None:
                 raise KeyError(analysis_id)
             doc["analyses"] = [a for a in doc["analyses"] if a["id"] != analysis_id]
+            doc.setdefault("deleted", []).append(target.get("uid"))  # ne revient pas à la prochaine mise à jour
             self._commit(doc, "suppression", target["name"])

@@ -170,3 +170,29 @@ def test_generic_github_token_never_enables_writes(monkeypatch):
     assert isinstance(store_from_env(), FileStore)
     monkeypatch.setenv("COMPENDIUM_GITHUB_TOKEN", "jeton-dedie")
     assert isinstance(store_from_env(), GitHubStore)
+
+
+
+def test_migration_keeps_online_edits_and_adds_new_sources(tmp_path):
+    """Un compendium enregistré par l'ancienne version (hématologie seule, sans
+    uid) garde ses modifications et reçoit la chimie ; une analyse supprimée en
+    ligne ne revient pas."""
+    from compendium.data import ANALYSES
+
+    old = [dict(a) for a in ANALYSES if a["group"] == "hemato"]
+    for a in old:
+        a.pop("uid"); a.pop("group"); a.pop("alt_sample"); a.pop("frequency"); a.pop("urgent")
+    next(a for a in old if a["name"] == "Hémoglobine")["tat"] = "édité en ligne"
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({"version": 3, "analyses": old, "history": []}, ensure_ascii=False))
+
+    comp = Compendium(FileStore(path))
+    assert len(comp.analyses) == len(ANALYSES)
+    assert next(a for a in comp.analyses if a["name"] == "Hémoglobine")["tat"] == "édité en ligne"
+    assert len({a["uid"] for a in comp.analyses}) == len(comp.analyses)
+
+    target = next(a for a in comp.analyses if a["name"] == "Abricot (f237)")
+    comp.delete(target["id"])
+    again = Compendium(FileStore(path))
+    assert not any(a["name"] == "Abricot (f237)" for a in again.analyses)
+    assert len(again.analyses) == len(ANALYSES) - 1

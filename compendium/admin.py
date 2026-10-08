@@ -23,7 +23,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from compendium.data import SECTIONS
+from compendium.data import FIELDS, GROUPS, SECTIONS
 from compendium.store import StoreError
 
 COOKIE = "compendium_session"
@@ -31,8 +31,6 @@ SESSION_S = 8 * 3600
 MAX_FAILS = 5
 LOCK_S = 15 * 60
 
-FIELDS = ("sample", "container", "volume", "delay", "technique", "device", "tat", "unit",
-          "storage", "inami", "pseudocode", "price", "note")
 _failures: dict[str, list[float]] = {}
 
 
@@ -155,7 +153,8 @@ def build_router(get_compendium) -> APIRouter:
     def data(request: Request) -> dict:
         _require_session(request)
         comp = get_compendium()
-        return {"sections": SECTIONS, "analyses": comp.analyses, "history": comp.doc.get("history", [])[:50]}
+        return {"groups": GROUPS, "sections": SECTIONS, "analyses": comp.analyses,
+                "history": comp.doc.get("history", [])[:50]}
 
     @router.post("/admin/api/analyses")
     async def save(request: Request) -> dict:
@@ -229,8 +228,9 @@ main { padding:18px 0 50px; }
 <script>
 const app = document.getElementById("app");
 const esc = s => (s == null ? "" : String(s)).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const FIELDS = [["sample","Type d'échantillon *"],["container","Matériel (tube, pot)"],["volume","Volume minimal"],
-  ["delay","Délai max. pré-analytique"],["technique","Technique"],["device","Appareil"],["tat","TAT"],["unit","Unités"],
+const FIELDS = [["sample","Type d'échantillon *"],["alt_sample","Autre échantillon possible"],["container","Matériel (tube, pot)"],
+  ["volume","Volume minimal"],["delay","Délai max. pré-analytique"],["technique","Technique"],["device","Appareil"],
+  ["urgent","Réalisable en urgence"],["frequency","Fréquence de réalisation"],["tat","TAT"],["unit","Unités"],
   ["storage","Conservation"],["inami","Code INAMI"],["pseudocode","Pseudocode"],["price","Tarification patient"]];
 let DATA = null, STATUS = null, flash = null;
 
@@ -267,10 +267,10 @@ function listView(filter = "") {
   const store = STATUS.durable ? "" : `<div class="msg err">Stockage : ${esc(STATUS.storage)}. Sur Render, ces modifications
     seront PERDUES au prochain redémarrage. Ajoute COMPENDIUM_GITHUB_TOKEN dans Render pour les rendre permanentes.</div>`;
   const rows = DATA.sections.map(s => {
-    const items = DATA.analyses.filter(a => a.section === s.id && (!f || a.name.toLowerCase().includes(f)));
+    const items = DATA.analyses.filter(a => a.section === s.id && (!f || (a.name + " " + (a.sample || "") + " " + (a.inami || "")).toLowerCase().includes(f)));
     if (!items.length) return "";
     return `<h3>${esc(s.title)}</h3>` + items.map(a => `<div class="row"><span class="n">${esc(a.name)}</span>
-      <span class="s">${esc(a.inami || a.pseudocode || "")}</span><button data-edit="${a.id}">Modifier</button></div>`).join("");
+      <span class="s">${esc(a.sample || "")} · ${esc(a.inami || a.pseudocode || "")}</span><button data-edit="${a.id}">Modifier</button></div>`).join("");
   }).join("");
   const hist = (DATA.history || []).slice(0, 8).map(h => `<li>${esc(h.at.replace("T", " ").slice(0, 16))} · ${esc(h.action)} · ${esc(h.name)}</li>`).join("");
   app.innerHTML = msg() + store + `<div class="toolbar"><input id="flt" placeholder="Filtrer par nom…" value="${esc(filter)}">
@@ -295,7 +295,8 @@ function textToRef(t) {
 }
 function editView(a) {
   const isNew = !a; a = a || {section: DATA.sections[0].id};
-  const opts = DATA.sections.map(s => `<option value="${s.id}"${s.id === a.section ? " selected" : ""}>${esc(s.title)}</option>`).join("");
+  const opts = DATA.groups.map(g => `<optgroup label="${esc(g.title)}">` + DATA.sections.filter(s => s.group === g.id)
+    .map(s => `<option value="${s.id}"${s.id === a.section ? " selected" : ""}>${esc(s.title)}</option>`).join("") + "</optgroup>").join("");
   app.innerHTML = `<form class="box" id="ed"><h2 style="margin-top:0">${isNew ? "Nouvelle analyse" : "Modifier : " + esc(a.name)}</h2>
     <div class="grid">
       <div class="full"><label>Nom de l'analyse *</label><input name="name" required value="${esc(a.name)}"></div>

@@ -9,6 +9,7 @@ telles quelles, une ligne par tranche d'âge.
 from __future__ import annotations
 
 SOURCE = "Compendium Hématologie, version du 15/01/2024"
+HEMATO_SOURCE = SOURCE
 
 EDTA = "Sang total EDTA"
 CIT = "Tube citraté"
@@ -243,6 +244,43 @@ ANALYSES += [
     _ac("Fondaparinux", None, note=None),
     _ac("Danaparoïde sulfate", [("Zone thérapeutique", "0,5 – 0,8 UI anti-Xa/mL")]),
 ]
+
+# -- Assemblage : hématologie (ci-dessus) + chimie (compendium/chimie.json) ----
+# `uid` : identifiant stable d'une analyse du document source. Il permet
+# d'ajouter les nouvelles analyses d'une nouvelle version sans écraser les
+# modifications faites en ligne (voir compendium/store.py).
+
+import json as _json
+from pathlib import Path as _Path
+
+_CHIMIE = _json.loads((_Path(__file__).with_name("chimie.json")).read_text(encoding="utf-8"))
+CHIMIE_SOURCE = _CHIMIE["source"]
+
+GROUPS = [
+    {"id": "hemato", "title": "Hématologie", "source": HEMATO_SOURCE},
+    {"id": "chimie", "title": "Chimie clinique", "source": CHIMIE_SOURCE},
+]
+SOURCE = " · ".join(g["source"] for g in GROUPS)
+
+for _s in SECTIONS:
+    _s["group"] = "hemato"
+for _i, _x in enumerate(ANALYSES):
+    _x["group"] = "hemato"
+    _x["uid"] = f"hem-{_i}"
+
+SECTIONS += [dict(s, group="chimie") for s in _CHIMIE["sections"]]
+for _i, _x in enumerate(_CHIMIE["analyses"]):
+    ANALYSES.append(dict(_x, group="chimie", uid=f"chim-{_i}"))
+
+FIELDS = ("sample", "alt_sample", "container", "volume", "delay", "technique", "device", "urgent",
+          "frequency", "tat", "unit", "storage", "inami", "pseudocode", "price", "note")
+for _x in ANALYSES:
+    for _f in FIELDS + ("ref",):
+        _x.setdefault(_f, None)
+    if isinstance(_x["ref"], list):
+        _x["ref"] = [list(r) for r in _x["ref"]]
+
+SECTION_GROUP = {s["id"]: s["group"] for s in SECTIONS}
 
 for _i, _x in enumerate(ANALYSES):
     _x["id"] = _i
