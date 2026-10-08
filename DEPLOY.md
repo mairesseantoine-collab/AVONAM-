@@ -4,8 +4,19 @@
 > désormais le compendium des analyses (`compendium/`, données transcrites du
 > compendium du laboratoire version 15/01/2024) : recherche, filtres par
 > section et par échantillon, valeurs de référence par âge, impression.
-> Le `Dockerfile` lance `uvicorn compendium.app:app`. Pour mettre à jour une
-> analyse, modifier `compendium/data.py` puis pousser : Render redéploie.
+> Le `Dockerfile` lance `uvicorn compendium.app:app`.
+>
+> **Modifier le compendium en ligne** : page `/admin` (lien en bas du site),
+> protégée par mot de passe. Variables du web service Render :
+>
+> | Variable | Rôle |
+> |---|---|
+> | `COMPENDIUM_ADMIN_PASSWORD` | mot de passe de l'espace d'édition (sans elle, édition désactivée) |
+> | `COMPENDIUM_GITHUB_TOKEN` | jeton GitHub « fine-grained », accès à ce seul dépôt, permission *Contents : Read and write*. Chaque modification devient un commit de `compendium/compendium.json` (permanent, historique complet). Sans lui, les modifications sont perdues au redémarrage du service gratuit. |
+> | `COMPENDIUM_GITHUB_BRANCH` | branche déployée par Render (défaut `claude/algo-trading-platform-bkqr9g`) |
+>
+> Sécurité : 5 essais ratés → blocage 15 min ; session de 8 h ; changer le
+> mot de passe déconnecte tout le monde.
 > L'ancienne plateforme de trading reste dans le dépôt mais n'est plus servie.
 
 

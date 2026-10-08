@@ -11,28 +11,50 @@ import json
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from compendium.data import ANALYSES, SECTIONS, SOURCE
+from compendium.admin import build_router
+from compendium.data import SECTIONS, SOURCE
+from compendium.store import Compendium, store_from_env
 
 app = FastAPI(title="Compendium Hématologie", docs_url=None, redoc_url=None)
+
+_compendium: Compendium | None = None
+
+
+def get_compendium() -> Compendium:
+    """Données courantes (modifiables via /admin), chargées au premier appel."""
+    global _compendium
+    if _compendium is None:
+        _compendium = Compendium(store_from_env())
+    return _compendium
+
+
+def set_compendium(comp: Compendium | None) -> None:
+    """Pour les tests : remplace le stockage."""
+    global _compendium
+    _compendium = comp
+
+
+app.include_router(build_router(get_compendium))
 
 
 @app.get("/healthz")
 def healthz() -> dict:
-    return {"status": "ok", "analyses": len(ANALYSES)}
+    return {"status": "ok", "analyses": len(get_compendium().analyses)}
 
 
 @app.get("/api/analyses")
 def api_analyses() -> JSONResponse:
-    return JSONResponse({"source": SOURCE, "sections": SECTIONS, "analyses": ANALYSES})
+    return JSONResponse({"source": SOURCE, "sections": SECTIONS, "analyses": get_compendium().analyses})
 
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
-    payload = json.dumps({"sections": SECTIONS, "analyses": ANALYSES}, ensure_ascii=False)
+    analyses = get_compendium().analyses
+    payload = json.dumps({"sections": SECTIONS, "analyses": analyses}, ensure_ascii=False)
     payload = payload.replace("</", "<\\/")  # jamais de fin de balise dans le script
     page = _PAGE.replace("__DATA__", payload).replace("__SOURCE__", html.escape(SOURCE))
-    page = page.replace("__COUNT__", str(len(ANALYSES)))
-    return HTMLResponse(page)
+    page = page.replace("__COUNT__", str(len(analyses)))
+    return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
 
 
 _PAGE = r"""<!doctype html>
@@ -132,6 +154,7 @@ footer { color: var(--muted); font-size: 12px; padding: 0 0 30px; }
 <footer class="wrap">
   Données reprises du compendium du laboratoire (__SOURCE__). En cas de doute sur un prélèvement ou
   une interprétation, se référer au laboratoire. TAT : délai de rendu du résultat.
+  · <a href="/admin" style="color:inherit">Modifier le compendium</a>
 </footer>
 <script>
 const DATA = __DATA__;
